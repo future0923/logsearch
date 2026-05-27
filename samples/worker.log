@@ -1,0 +1,3 @@
+2026-05-22T08:00:03Z INFO worker boot complete
+2026-05-22T08:04:10Z ERROR worker job_id=abc-778 failed with timeout
+2026-05-22T08:04:13Z INFO worker job_id=abc-778 queued retry

@@ -1,0 +1,4 @@
+2026-05-22T08:00:01Z INFO app boot complete
+2026-05-22T08:01:12Z WARN app retrying request order_id=123
+2026-05-22T08:02:33Z ERROR com.foo.OrderService timeout while loading order_id=123
+2026-05-22T08:03:44Z INFO app recovered order_id=123

@@ -1,0 +1,10 @@
+.idea/
+data/
+config.toml
+config.test.toml
+
+backend/target/
+frontend/node_modules/
+frontend/dist/
+
+samples/console.log
