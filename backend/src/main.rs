@@ -55,8 +55,7 @@ async fn main() -> anyhow::Result<()> {
             let started = Instant::now();
             set_cli_progress_started(started);
             rebuild_index_storage(&config.index.dir)?;
-            let index =
-                LogSearchIndex::open_or_create(&config.index.dir, config.index.commit_batch_size)?;
+            let index = LogSearchIndex::open_or_create(&config.index.dir)?;
             let mut total_lines = 0_usize;
             println!(
                 "Rebuilding index: {} files -> {}",
@@ -101,10 +100,7 @@ async fn main() -> anyhow::Result<()> {
         None => {}
     }
 
-    let index = Arc::new(LogSearchIndex::open_or_create(
-        &config.index.dir,
-        config.index.commit_batch_size,
-    )?);
+    let index = Arc::new(LogSearchIndex::open_or_create(&config.index.dir)?);
 
     let addr: SocketAddr = config.server.addr.parse()?;
     let state = build_app_state(config, index);

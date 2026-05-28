@@ -32,14 +32,13 @@ mod tests {
             },
             index: IndexConfig {
                 dir: index_dir.clone(),
-                commit_batch_size: 5000,
             },
             files: vec![LogFileConfig {
                 id: "large".to_string(),
                 path: PathBuf::from(&log_path),
             }],
         });
-        let index = Arc::new(LogSearchIndex::open_or_create(&index_dir, 5000).unwrap());
+        let index = Arc::new(LogSearchIndex::open_or_create(&index_dir).unwrap());
 
         let started = Instant::now();
         let _state = build_app_state(config, index);

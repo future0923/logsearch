@@ -9,7 +9,7 @@ use crate::{
     },
     state::{
         FileKind, FileState, IndexState, can_increment, fingerprint, generation_id,
-        gzip_fingerprint, state_path,
+        gzip_fingerprint,
     },
 };
 use anyhow::{Context, anyhow};
@@ -18,18 +18,11 @@ use std::{
     fs,
     io::{IsTerminal, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock, RwLock},
+    sync::{Arc, OnceLock, RwLock},
     time::{Duration, Instant},
-};
-use tantivy::{
-    Index, IndexReader, IndexWriter, ReloadPolicy, TantivyError, Term, doc,
-    schema::{FAST, Field, INDEXED, STORED, STRING, Schema},
 };
 use tracing::{debug, info};
 
-const INDEX_SCHEMA_VERSION: &str = "8";
-const INDEX_SCHEMA_VERSION_FILE: &str = "log-search-schema-version";
-const LEGACY_STATE_FILE: &str = "log-search-state.json";
 static CLI_PROGRESS_STARTED: OnceLock<Instant> = OnceLock::new();
 
 pub(crate) fn trace_index_logs_enabled() -> bool {
@@ -45,13 +38,8 @@ fn trace_index_logs_enabled_from_env(get_env: impl Fn(&str) -> Option<String>) -
 
 #[derive(Clone)]
 pub struct LogSearchIndex {
-    index: Index,
-    reader: IndexReader,
-    fields: LogFields,
     state_dir: Option<PathBuf>,
-    commit_batch_size: usize,
     status: Arc<RwLock<BTreeMap<String, IndexStatus>>>,
-    writer_lock: Arc<Mutex<()>>,
     memory_lines: Arc<RwLock<BTreeMap<String, Vec<LogLine>>>>,
 }
 
@@ -82,75 +70,29 @@ struct IndexProgress<'a> {
     elapsed_ms: u128,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct LogFields {
-    file_id: Field,
-    path: Field,
-    line_no: Field,
-    offset: Field,
-    kind: Field,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexLayout {
-    pub root_dir: PathBuf,
-    pub legacy_index_dir: PathBuf,
-    pub index_dir: PathBuf,
     pub state_dir: PathBuf,
 }
 
 impl IndexLayout {
     pub fn from_config_dir(config_dir: &Path) -> Self {
-        let root_dir = if config_dir.file_name().and_then(|name| name.to_str()) == Some("index") {
-            config_dir
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| config_dir.to_path_buf())
-        } else {
-            config_dir.to_path_buf()
-        };
-
         Self {
-            legacy_index_dir: root_dir.join("index"),
-            index_dir: root_dir.join("tantivy"),
-            state_dir: root_dir.join("state"),
-            root_dir,
+            state_dir: config_dir.to_path_buf(),
         }
     }
 
     fn prepare(&self) -> anyhow::Result<()> {
-        fs::create_dir_all(&self.index_dir)?;
         fs::create_dir_all(&self.state_dir)?;
-        migrate_legacy_tantivy_index(&self.legacy_index_dir, &self.index_dir)?;
-        migrate_legacy_file(
-            &self.root_dir.join(LEGACY_STATE_FILE),
-            &state_path(&self.state_dir),
-        )?;
-        migrate_legacy_file(
-            &self.legacy_index_dir.join(LEGACY_STATE_FILE),
-            &state_path(&self.state_dir),
-        )?;
-        migrate_legacy_file(
-            &self.root_dir.join(INDEX_SCHEMA_VERSION_FILE),
-            &self.state_dir.join(INDEX_SCHEMA_VERSION_FILE),
-        )?;
-        migrate_legacy_file(
-            &self.legacy_index_dir.join(INDEX_SCHEMA_VERSION_FILE),
-            &self.state_dir.join(INDEX_SCHEMA_VERSION_FILE),
-        )?;
         Ok(())
     }
 }
 
 pub fn rebuild_index_storage(config_dir: &Path) -> anyhow::Result<()> {
     let layout = IndexLayout::from_config_dir(config_dir);
-    if layout.index_dir.exists() {
-        fs::remove_dir_all(&layout.index_dir)?;
-    }
     if layout.state_dir.exists() {
         fs::remove_dir_all(&layout.state_dir)?;
     }
-    fs::create_dir_all(&layout.index_dir)?;
     fs::create_dir_all(&layout.state_dir)?;
     Ok(())
 }
@@ -160,58 +102,25 @@ pub fn set_cli_progress_started(started: Instant) {
 }
 
 impl LogSearchIndex {
-    pub fn open_or_create(path: &Path, commit_batch_size: usize) -> anyhow::Result<Self> {
+    pub fn open_or_create(path: &Path) -> anyhow::Result<Self> {
         let layout = IndexLayout::from_config_dir(path);
         layout.prepare()?;
-        let (schema, fields) = build_schema();
-        ensure_schema_version(&layout.index_dir, &layout.state_dir)?;
-        let index = match Index::open_in_dir(&layout.index_dir) {
-            Ok(index) => index,
-            Err(TantivyError::OpenDirectoryError(_)) | Err(TantivyError::OpenReadError(_)) => {
-                let index = Index::create_in_dir(&layout.index_dir, schema)?;
-                write_schema_version(&layout.state_dir)?;
-                index
-            }
-            Err(err) => return Err(err.into()),
-        };
-        register_tokenizers(&index)?;
-        let reader = index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::Manual)
-            .try_into()?;
         info!(
-            index_dir = %layout.index_dir.display(),
             state_dir = %layout.state_dir.display(),
-            commit_batch_size,
-            schema_version = INDEX_SCHEMA_VERSION,
             "index.ready"
         );
 
         Ok(Self {
-            index,
-            reader,
-            fields,
             state_dir: Some(layout.state_dir),
-            commit_batch_size,
             status: Arc::new(RwLock::new(BTreeMap::new())),
-            writer_lock: Arc::new(Mutex::new(())),
             memory_lines: Arc::new(RwLock::new(BTreeMap::new())),
         })
     }
 
     pub fn create_in_ram() -> anyhow::Result<Self> {
-        let (schema, fields) = build_schema();
-        let index = Index::create_in_ram(schema);
-        register_tokenizers(&index)?;
-        let reader = index.reader_builder().try_into()?;
         Ok(Self {
-            index,
-            reader,
-            fields,
             state_dir: None,
-            commit_batch_size: 5_000,
             status: Arc::new(RwLock::new(BTreeMap::new())),
-            writer_lock: Arc::new(Mutex::new(())),
             memory_lines: Arc::new(RwLock::new(BTreeMap::new())),
         })
     }
@@ -350,25 +259,11 @@ impl LogSearchIndex {
             return Ok(0);
         }
 
-        let _writer_guard = self
-            .writer_lock
-            .lock()
-            .map_err(|_| anyhow!("index writer lock poisoned"))?;
-        let mut writer = self.index.writer(100_000_000)?;
-        writer.delete_term(Term::from_field_text(self.fields.file_id, &generation_id));
-
         let mut count = 0_usize;
-        let indexed_line_no = scan_gzip_lines(path, |line| {
-            self.add_gzip_line(&mut writer, &generation_id, &line)?;
+        let indexed_line_no = scan_gzip_lines(path, |_| {
             count += 1;
-            if count % self.commit_batch_size == 0 {
-                writer.commit()?;
-            }
             Ok(())
         })?;
-
-        writer.commit()?;
-        self.reader.reload()?;
 
         state.files.insert(
             state_key,
@@ -465,19 +360,10 @@ impl LogSearchIndex {
         path: &Path,
         start_offset: u64,
         start_line_no: u64,
-        replace: bool,
+        _replace: bool,
         file_size: u64,
         started: Instant,
     ) -> anyhow::Result<(u64, u64, usize)> {
-        let _writer_guard = self
-            .writer_lock
-            .lock()
-            .map_err(|_| anyhow!("index writer lock poisoned"))?;
-        let mut writer = self.index.writer(50_000_000)?;
-        if replace {
-            writer.delete_term(Term::from_field_text(self.fields.file_id, file_id));
-        }
-
         let mut count = 0_usize;
         let mut last_progress = Instant::now();
         let mut last_progress_percent = if start_offset == 0 { 0.0 } else { -10.0 };
@@ -493,7 +379,6 @@ impl LogSearchIndex {
         });
         let (offset, line_no) = scan_lines_from(path, start_offset, start_line_no, |line| {
             let current_offset = line.offset + line.content.len() as u64 + 1;
-            self.add_line(&mut writer, file_id, &line)?;
             count += 1;
             let progress_percent = if file_size == 0 {
                 100.0
@@ -540,9 +425,6 @@ impl LogSearchIndex {
             Ok(())
         })?;
 
-        writer.commit()?;
-        self.reader.reload()?;
-
         Ok((offset, line_no, count))
     }
 
@@ -551,17 +433,6 @@ impl LogSearchIndex {
             .write()
             .map_err(|_| anyhow!("memory line index lock poisoned"))?
             .insert(file_id.to_string(), lines.to_vec());
-        let _writer_guard = self
-            .writer_lock
-            .lock()
-            .map_err(|_| anyhow!("index writer lock poisoned"))?;
-        let mut writer = self.index.writer(50_000_000)?;
-        writer.delete_term(Term::from_field_text(self.fields.file_id, file_id));
-        for line in lines {
-            self.add_line(&mut writer, file_id, line)?;
-        }
-        writer.commit()?;
-        self.reader.reload()?;
         Ok(())
     }
 
@@ -776,48 +647,6 @@ impl LogSearchIndex {
         })
     }
 
-    fn add_line(
-        &self,
-        writer: &mut IndexWriter,
-        file_id: &str,
-        line: &LogLine,
-    ) -> anyhow::Result<()> {
-        let path = line
-            .path
-            .canonicalize()
-            .unwrap_or_else(|_| line.path.clone());
-        let document = doc!(
-            self.fields.file_id => file_id.to_string(),
-            self.fields.path => path.to_string_lossy().to_string(),
-            self.fields.line_no => line.line_no,
-            self.fields.offset => line.offset,
-            self.fields.kind => "plain",
-        );
-        writer.add_document(document)?;
-        Ok(())
-    }
-
-    fn add_gzip_line(
-        &self,
-        writer: &mut IndexWriter,
-        file_id: &str,
-        line: &LogLine,
-    ) -> anyhow::Result<()> {
-        let path = line
-            .path
-            .canonicalize()
-            .unwrap_or_else(|_| line.path.clone());
-        let document = doc!(
-            self.fields.file_id => file_id.to_string(),
-            self.fields.path => path.to_string_lossy().to_string(),
-            self.fields.line_no => line.line_no,
-            self.fields.offset => line.offset,
-            self.fields.kind => "gzip",
-        );
-        writer.add_document(document)?;
-        Ok(())
-    }
-
     fn search_sources(&self) -> anyhow::Result<Vec<SearchSource>> {
         if let Some(state_dir) = &self.state_dir {
             let state = IndexState::load(state_dir)?;
@@ -856,125 +685,6 @@ impl LogSearchIndex {
         sources.sort_by(|a, b| a.file_id.cmp(&b.file_id).then_with(|| a.path.cmp(&b.path)));
         Ok(sources)
     }
-}
-
-fn build_schema() -> (Schema, LogFields) {
-    let mut builder = Schema::builder();
-    let file_id = builder.add_text_field("file_id", STRING | STORED);
-    let path = builder.add_text_field("path", STRING | STORED);
-    let line_no = builder.add_u64_field("line_no", INDEXED | FAST | STORED);
-    let offset = builder.add_u64_field("offset", INDEXED | FAST | STORED);
-    let kind = builder.add_text_field("kind", STRING | STORED);
-    let schema = builder.build();
-
-    (
-        schema,
-        LogFields {
-            file_id,
-            path,
-            line_no,
-            offset,
-            kind,
-        },
-    )
-}
-
-fn register_tokenizers(index: &Index) -> anyhow::Result<()> {
-    let _ = index;
-    Ok(())
-}
-
-fn ensure_schema_version(index_dir: &Path, state_dir: &Path) -> anyhow::Result<()> {
-    let marker = state_dir.join(INDEX_SCHEMA_VERSION_FILE);
-    if marker.exists() && fs::read_to_string(&marker)?.trim() == INDEX_SCHEMA_VERSION {
-        return Ok(());
-    }
-
-    let has_existing_index = index_dir.join("meta.json").exists();
-    if has_existing_index {
-        for entry in fs::read_dir(index_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                fs::remove_dir_all(path)?;
-            } else {
-                fs::remove_file(path)?;
-            }
-        }
-    }
-
-    write_schema_version(state_dir)?;
-    Ok(())
-}
-
-fn write_schema_version(state_dir: &Path) -> anyhow::Result<()> {
-    fs::create_dir_all(state_dir)?;
-    fs::write(
-        state_dir.join(INDEX_SCHEMA_VERSION_FILE),
-        INDEX_SCHEMA_VERSION,
-    )?;
-    Ok(())
-}
-
-fn migrate_legacy_file(from: &Path, to: &Path) -> anyhow::Result<()> {
-    if !from.exists() || to.exists() {
-        return Ok(());
-    }
-
-    if let Some(parent) = to.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::rename(from, to)?;
-    Ok(())
-}
-
-fn migrate_legacy_tantivy_index(from: &Path, to: &Path) -> anyhow::Result<()> {
-    if !from.join("meta.json").exists() || from == to {
-        return Ok(());
-    }
-
-    let target_has_segments = tantivy_segment_file_count(to)? > 0;
-    if !target_has_segments {
-        if to.exists() {
-            for entry in fs::read_dir(to)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_dir() {
-                    fs::remove_dir_all(path)?;
-                } else {
-                    fs::remove_file(path)?;
-                }
-            }
-        }
-        fs::create_dir_all(to)?;
-        for entry in fs::read_dir(from)? {
-            let entry = entry?;
-            let path = entry.path();
-            let file_name = entry.file_name();
-            if file_name == LEGACY_STATE_FILE || file_name == INDEX_SCHEMA_VERSION_FILE {
-                continue;
-            }
-            fs::rename(path, to.join(file_name))?;
-        }
-    }
-
-    Ok(())
-}
-
-fn tantivy_segment_file_count(path: &Path) -> anyhow::Result<usize> {
-    if !path.exists() {
-        return Ok(0);
-    }
-
-    Ok(fs::read_dir(path)?
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            matches!(
-                entry.path().extension().and_then(|ext| ext.to_str()),
-                Some("idx" | "term" | "pos" | "store" | "fast" | "fieldnorm")
-            )
-        })
-        .count())
 }
 
 fn split_context_lines(context: &[ContextLine], line_no: u64) -> (Vec<String>, Vec<String>) {
@@ -1374,6 +1084,7 @@ fn format_duration(duration: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::state_path;
 
     fn line(path: &str, line_no: u64, offset: u64, content: &str) -> LogLine {
         LogLine {
@@ -1516,73 +1227,28 @@ mod tests {
     }
 
     #[test]
-    fn layout_keeps_tantivy_and_state_in_separate_directories() {
-        let layout = IndexLayout::from_config_dir(Path::new("/var/lib/log-search/index"));
+    fn opening_persistent_index_creates_only_configured_state_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("index");
 
-        assert_eq!(layout.root_dir, PathBuf::from("/var/lib/log-search"));
-        assert_eq!(
-            layout.index_dir,
-            PathBuf::from("/var/lib/log-search/tantivy")
-        );
-        assert_eq!(layout.state_dir, PathBuf::from("/var/lib/log-search/state"));
+        let _index = LogSearchIndex::open_or_create(&config_dir).unwrap();
+
+        assert!(config_dir.exists());
+        assert!(!dir.path().join("tantivy").exists());
     }
 
     #[test]
-    fn rebuild_index_storage_removes_index_and_state_directories() {
+    fn rebuild_index_storage_removes_state_directory() {
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path().join("index");
         let layout = IndexLayout::from_config_dir(&config_dir);
-        fs::create_dir_all(&layout.index_dir).unwrap();
         fs::create_dir_all(&layout.state_dir).unwrap();
-        fs::write(layout.index_dir.join("old.idx"), "old index").unwrap();
         fs::write(state_path(&layout.state_dir), "{}").unwrap();
 
         rebuild_index_storage(&config_dir).unwrap();
 
-        assert!(layout.index_dir.exists());
         assert!(layout.state_dir.exists());
-        assert!(!layout.index_dir.join("old.idx").exists());
         assert!(!state_path(&layout.state_dir).exists());
-    }
-
-    #[test]
-    fn legacy_state_files_are_moved_out_of_index_root() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_dir = dir.path().join("index");
-        fs::create_dir_all(&config_dir).unwrap();
-        fs::write(config_dir.join(LEGACY_STATE_FILE), "{}").unwrap();
-        fs::write(
-            config_dir.join(INDEX_SCHEMA_VERSION_FILE),
-            INDEX_SCHEMA_VERSION,
-        )
-        .unwrap();
-
-        let layout = IndexLayout::from_config_dir(&config_dir);
-        layout.prepare().unwrap();
-
-        assert!(!config_dir.join(LEGACY_STATE_FILE).exists());
-        assert!(!config_dir.join(INDEX_SCHEMA_VERSION_FILE).exists());
-        assert!(state_path(&layout.state_dir).exists());
-        assert!(layout.state_dir.join(INDEX_SCHEMA_VERSION_FILE).exists());
-    }
-
-    #[test]
-    fn legacy_tantivy_files_are_moved_to_tantivy_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_dir = dir.path().join("index");
-        fs::create_dir_all(&config_dir).unwrap();
-        fs::write(config_dir.join("meta.json"), "{}").unwrap();
-        fs::write(config_dir.join("segment.idx"), "segment").unwrap();
-        fs::write(config_dir.join(LEGACY_STATE_FILE), "{}").unwrap();
-
-        let layout = IndexLayout::from_config_dir(&config_dir);
-        layout.prepare().unwrap();
-
-        assert!(!config_dir.join("meta.json").exists());
-        assert!(!config_dir.join("segment.idx").exists());
-        assert!(layout.index_dir.join("meta.json").exists());
-        assert!(layout.index_dir.join("segment.idx").exists());
-        assert!(state_path(&layout.state_dir).exists());
     }
 
     #[test]
@@ -1683,7 +1349,7 @@ mod tests {
         std::fs::write(&business_path, "INFO business line\n").unwrap();
         std::fs::write(&easypay_path, "INFO settlement_batch_no = '2025021'\n").unwrap();
         let index_dir = dir.path().join("index");
-        let index = LogSearchIndex::open_or_create(&index_dir, 5000).unwrap();
+        let index = LogSearchIndex::open_or_create(&index_dir).unwrap();
         index.sync_file("business", &business_path).unwrap();
         index.sync_file("easypay", &easypay_path).unwrap();
 
@@ -1821,7 +1487,7 @@ mod tests {
         let log_path = dir.path().join("app.log");
         std::fs::write(&log_path, "first timeout\n").unwrap();
 
-        let index = LogSearchIndex::open_or_create(&index_dir, 2).unwrap();
+        let index = LogSearchIndex::open_or_create(&index_dir).unwrap();
         assert_eq!(index.sync_file("app", &log_path).unwrap(), 1);
         assert_eq!(index.sync_file("app", &log_path).unwrap(), 0);
 
@@ -1945,7 +1611,7 @@ mod tests {
         write!(encoder, "before\narchived timeout\nafter\n").unwrap();
         encoder.finish().unwrap();
 
-        let index = LogSearchIndex::open_or_create(&index_dir, 2).unwrap();
+        let index = LogSearchIndex::open_or_create(&index_dir).unwrap();
         assert_eq!(index.sync_gzip_file("app", &log_path).unwrap(), 3);
         assert_eq!(index.sync_gzip_file("app", &log_path).unwrap(), 0);
 

@@ -362,7 +362,6 @@ mod tests {
             },
             index: IndexConfig {
                 dir: PathBuf::from("/tmp/index"),
-                commit_batch_size: 10,
             },
             files: vec![LogFileConfig {
                 id: "app".to_string(),

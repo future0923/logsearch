@@ -24,8 +24,6 @@ pub struct ServerConfig {
 pub struct IndexConfig {
     #[serde(default = "default_index_dir")]
     pub dir: PathBuf,
-    #[serde(default = "default_commit_batch_size")]
-    pub commit_batch_size: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -46,7 +44,6 @@ impl Default for IndexConfig {
     fn default() -> Self {
         Self {
             dir: default_index_dir(),
-            commit_batch_size: default_commit_batch_size(),
         }
     }
 }
@@ -93,8 +90,4 @@ fn default_addr() -> String {
 
 fn default_index_dir() -> PathBuf {
     PathBuf::from("./data/index")
-}
-
-fn default_commit_batch_size() -> usize {
-    5_000
 }
