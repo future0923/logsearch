@@ -10,21 +10,21 @@ Log Search 是一个本地日志检索工具。把要看的日志文件写进配
 - 点开命中行，直接查看前后上下文。
 - 日志持续写入时，索引自动更新。
 
-![首页](docs/images/home.jpg)
+![首页](docs/images/home.png)
 
 ## 界面预览
 
 搜索结果：
 
-![搜索结果](docs/images/search-results.jpg)
+![搜索结果](docs/images/search-results.png)
 
 点击结果后查看上下文：
 
-![上下文预览](docs/images/context-preview.jpg)
+![上下文预览](docs/images/context-preview.png)
 
 点击放大后查看更大的上下文区域：
 
-![放大预览](docs/images/expanded-preview.jpg)
+![放大预览](docs/images/expanded-preview.png)
 
 ## 用户怎么用
 
