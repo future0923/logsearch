@@ -650,18 +650,50 @@ impl LogSearchIndex {
         has_next: &mut bool,
         next_cursor: &mut Option<String>,
     ) -> anyhow::Result<bool> {
-        let mut source_complete = true;
-        let mut on_line = |line: LogLine| -> anyhow::Result<bool> {
-            if !matcher.is_match(&line.content) {
-                return Ok(true);
+        let mut matched_lines = Vec::new();
+        let mut collect_line = |line: LogLine| -> anyhow::Result<()> {
+            if line.line_no >= start_line_no {
+                return Ok(());
             }
 
+            if !matcher.is_match(&line.content) {
+                return Ok(());
+            }
+
+            matched_lines.push(line);
+            Ok(())
+        };
+
+        match source.kind {
+            FileKind::Hot | FileKind::Rotated => {
+                if self.state_dir.is_none() {
+                    let memory_lines = self
+                        .memory_lines
+                        .read()
+                        .map_err(|_| anyhow!("memory line index lock poisoned"))?;
+                    if let Some(lines) = memory_lines.get(&source.file_id) {
+                        for line in lines {
+                            collect_line(line.clone())?;
+                        }
+                    }
+                } else {
+                    scan_lines_from(&source.path, start_offset, 1, |line| collect_line(line))?;
+                }
+            }
+            FileKind::Gzip => {
+                scan_gzip_lines(&source.path, |line| collect_line(line))?;
+            }
+        }
+
+        matched_lines.sort_by(|a, b| b.line_no.cmp(&a.line_no));
+
+        for line in matched_lines {
             if hits.len() == limit {
                 *has_next = true;
                 *next_cursor = Some(encode_search_cursor(SearchCursor {
                     source_idx,
-                    offset: line.offset,
-                    line_no: line.line_no,
+                    offset: 0,
+                    line_no: line.line_no.saturating_add(1),
                 }));
                 return Ok(false);
             }
@@ -690,49 +722,9 @@ impl LogSearchIndex {
                 after,
                 context,
             });
-            Ok(true)
-        };
-
-        match source.kind {
-            FileKind::Hot | FileKind::Rotated => {
-                if self.state_dir.is_none() {
-                    let memory_lines = self
-                        .memory_lines
-                        .read()
-                        .map_err(|_| anyhow!("memory line index lock poisoned"))?;
-                    if let Some(lines) = memory_lines.get(&source.file_id) {
-                        for line in lines {
-                            if !source_complete {
-                                break;
-                            }
-                            if line.line_no < start_line_no {
-                                continue;
-                            }
-                            source_complete = on_line(line.clone())?;
-                        }
-                        return Ok(source_complete);
-                    }
-                }
-                scan_lines_from(&source.path, start_offset, start_line_no, |line| {
-                    if !source_complete {
-                        return Ok(());
-                    }
-                    source_complete = on_line(line)?;
-                    Ok(())
-                })?;
-            }
-            FileKind::Gzip => {
-                scan_gzip_lines(&source.path, |line| {
-                    if !source_complete || line.line_no < start_line_no {
-                        return Ok(());
-                    }
-                    source_complete = on_line(line)?;
-                    Ok(())
-                })?;
-            }
         }
 
-        Ok(source_complete)
+        Ok(true)
     }
 
     pub fn read_around(&self, req: &AroundRequest) -> anyhow::Result<AroundResponse> {
@@ -1018,7 +1010,7 @@ fn decode_search_cursor(cursor: Option<&str>) -> anyhow::Result<SearchCursor> {
         return Ok(SearchCursor {
             source_idx: 0,
             offset: 0,
-            line_no: 1,
+            line_no: u64::MAX,
         });
     };
 
@@ -1026,7 +1018,7 @@ fn decode_search_cursor(cursor: Option<&str>) -> anyhow::Result<SearchCursor> {
         return Ok(SearchCursor {
             source_idx: 0,
             offset: 0,
-            line_no: 1,
+            line_no: u64::MAX,
         });
     }
 
@@ -1037,7 +1029,7 @@ fn decode_search_cursor(cursor: Option<&str>) -> anyhow::Result<SearchCursor> {
             offset: parts[0]
                 .parse::<u64>()
                 .with_context(|| format!("invalid search cursor: {cursor}"))?,
-            line_no: 1,
+            line_no: u64::MAX,
         });
     }
     if parts.len() != 3 {
@@ -1064,6 +1056,7 @@ fn line_matches(content: &str, req: &SearchRequest, final_regex: &regex::Regex) 
 
 #[derive(Clone)]
 enum LineMatcher {
+    All,
     Regex(regex::Regex),
     Boolean(BooleanExpr),
     WholeWord {
@@ -1081,6 +1074,10 @@ enum LineMatcher {
 
 impl LineMatcher {
     fn new(req: &SearchRequest, regex: regex::Regex) -> Self {
+        if req.query.trim().is_empty() {
+            return Self::All;
+        }
+
         if req.regex {
             return Self::Regex(regex);
         }
@@ -1114,6 +1111,7 @@ impl LineMatcher {
 
     fn is_match(&self, content: &str) -> bool {
         match self {
+            Self::All => true,
             Self::Regex(regex) => regex.is_match(content),
             Self::Boolean(expr) => expr.is_match(content),
             Self::WholeWord {
@@ -1613,6 +1611,8 @@ mod tests {
         let (first_hits, _, _, first_has_next, cursor) = index.search(&first_req).unwrap();
 
         assert_eq!(first_hits.len(), 2);
+        assert_eq!(first_hits[0].line_no, 5);
+        assert_eq!(first_hits[1].line_no, 4);
         assert!(first_has_next);
         assert!(cursor.is_some());
 
@@ -1631,7 +1631,54 @@ mod tests {
             .collect::<std::collections::BTreeSet<_>>();
 
         assert_eq!(second_hits.len(), 2);
+        assert_eq!(second_hits[0].line_no, 3);
+        assert_eq!(second_hits[1].line_no, 2);
         assert!(first_keys.is_disjoint(&second_keys));
+    }
+
+    #[test]
+    fn empty_query_returns_all_lines_newest_first() {
+        let index = LogSearchIndex::create_in_ram().unwrap();
+        index
+            .index_lines(
+                "app",
+                &[
+                    line("/tmp/app.log", 1, 0, "first line"),
+                    line("/tmp/app.log", 2, 12, "second line"),
+                    line("/tmp/app.log", 3, 24, "third line"),
+                ],
+            )
+            .unwrap();
+
+        let req = SearchRequest {
+            query: String::new(),
+            regex: false,
+            case_insensitive: true,
+            whole_word: false,
+            limit: 2,
+            cursor: None,
+            file_ids: Vec::new(),
+            context_before: 0,
+            context_after: 0,
+        };
+
+        let (first_hits, _, _, has_next, cursor) = index.search(&req).unwrap();
+
+        assert_eq!(first_hits.len(), 2);
+        assert_eq!(first_hits[0].content, "third line");
+        assert_eq!(first_hits[1].content, "second line");
+        assert!(has_next);
+        assert!(cursor.is_some());
+
+        let (next_hits, _, _, _, _) = index
+            .search(&SearchRequest {
+                cursor,
+                ..req
+            })
+            .unwrap();
+
+        assert_eq!(next_hits.len(), 1);
+        assert_eq!(next_hits[0].content, "first line");
     }
 
     #[test]

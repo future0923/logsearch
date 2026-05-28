@@ -276,13 +276,14 @@
 
 .resultRow {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) auto;
+  grid-template-columns: 18px minmax(120px, 1fr) auto;
   grid-template-areas:
-    "path line"
-    "content content";
+    "toggle path line"
+    "toggle content content";
   width: 100%;
-  gap: 6px 8px;
-  padding: 13px 14px;
+  gap: 4px 8px;
+  padding: 11px 14px;
+  cursor: pointer;
   text-align: left;
   color: #263348;
   background: transparent;
@@ -291,12 +292,53 @@
 }
 
 .resultRow:hover,
-.resultRow.active {
+.resultRow.active,
+.resultRow:focus-visible {
   background: #eef5ff;
+}
+
+.resultRow:focus-visible {
+  outline: 2px solid #84a9ff;
+  outline-offset: -2px;
 }
 
 .resultRow.active {
   box-shadow: inset 3px 0 0 #1d4ed8;
+}
+
+.resultToggle,
+.resultToggleSpacer {
+  grid-area: toggle;
+  align-self: start;
+  width: 18px;
+  height: 18px;
+}
+
+.resultToggle {
+  display: inline-grid;
+  place-items: center;
+  margin-top: 1px;
+  padding: 0;
+  cursor: pointer;
+  color: #607086;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.resultRow:hover .resultToggle,
+.resultToggle:focus-visible {
+  background: #ffffff;
+  border-color: #cfd9e7;
+}
+
+.resultToggle:hover {
+  color: #1d4ed8;
+  background: #f8fbff;
+  border-color: #b8cae4;
 }
 
 .path {
@@ -317,12 +359,19 @@
 
 .resultRow code {
   grid-area: content;
+  display: block;
+  overflow: hidden;
+  padding-top: 1px;
   color: #18212f;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 13px;
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.resultRow.collapsed code {
+  max-height: 2.9em;
 }
 
 mark {
@@ -382,8 +431,25 @@ mark {
 .previewActions {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex: 0 0 auto;
+}
+
+.previewClose {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  color: #53657c;
+  background: #ffffff;
+  border: 1px solid #d4dbe6;
+  border-radius: 7px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.previewClose:hover {
+  color: #0f172a;
+  border-color: #aebbd0;
 }
 
 .previewToolbar,

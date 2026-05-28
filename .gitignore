@@ -1,5 +1,6 @@
 .idea/
 data/
+dist/
 config.toml
 config.test.toml
 

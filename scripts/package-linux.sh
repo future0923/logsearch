@@ -31,9 +31,11 @@ cp "$ROOT_DIR/backend/target/$TARGET/release/backend" "$RELEASE_DIR/$APP_NAME"
 cp -R "$ROOT_DIR/frontend/dist/." "$RELEASE_DIR/frontend/"
 cp "$ROOT_DIR/config.example.toml" "$RELEASE_DIR/config.toml"
 cp "$ROOT_DIR/packaging/start.sh" "$RELEASE_DIR/start.sh"
+cp "$ROOT_DIR/packaging/stop.sh" "$RELEASE_DIR/stop.sh"
+cp "$ROOT_DIR/packaging/status.sh" "$RELEASE_DIR/status.sh"
 cp "$ROOT_DIR/packaging/README.txt" "$RELEASE_DIR/README.txt"
 cp "$ROOT_DIR/packaging/log-search.service" "$RELEASE_DIR/log-search.service"
-chmod +x "$RELEASE_DIR/$APP_NAME" "$RELEASE_DIR/start.sh"
+chmod +x "$RELEASE_DIR/$APP_NAME" "$RELEASE_DIR/start.sh" "$RELEASE_DIR/stop.sh" "$RELEASE_DIR/status.sh"
 
 tar -C "$DIST_DIR" -czf "$RELEASE_DIR.tar.gz" "$(basename "$RELEASE_DIR")"
 

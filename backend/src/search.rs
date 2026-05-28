@@ -25,10 +25,6 @@ pub struct SearchRequest {
 
 impl SearchRequest {
     pub fn validate(&self) -> Result<(), SearchValidationError> {
-        if self.query.trim().is_empty() {
-            return Err(SearchValidationError::EmptyQuery);
-        }
-
         if self.limit > 1_000 {
             return Err(SearchValidationError::LimitTooLarge(self.limit));
         }
@@ -39,8 +35,6 @@ impl SearchRequest {
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum SearchValidationError {
-    #[error("query cannot be empty")]
-    EmptyQuery,
     #[error("limit cannot exceed 1000, got {0}")]
     LimitTooLarge(usize),
     #[error("path cannot be empty")]

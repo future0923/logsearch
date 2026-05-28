@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { FormEvent, ReactNode } from 'react'
+import type { FormEvent, KeyboardEvent, ReactNode } from 'react'
 import './App.css'
 
 type ContextLine = {
@@ -57,6 +57,7 @@ const CONTEXT_OPTIONS = [0, 2, 5, 10, 20]
 const EXPAND_OPTIONS = [20, 50, 100, 200]
 const INITIAL_EXPAND_LINES = 50
 const SEARCH_PAGE_SIZE = 20
+const COLLAPSIBLE_RESULT_LENGTH = 180
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -140,8 +141,12 @@ function fallbackContext(hit: SearchHit): ContextLine[] {
   return [...before, { lineNo: hit.lineNo, offset: hit.offset, content: hit.content }, ...after]
 }
 
+function resultKey(hit: SearchHit) {
+  return `${hit.fileId}-${hit.offset}`
+}
+
 function App() {
-  const [query, setQuery] = useState('timeout')
+  const [query, setQuery] = useState('')
   const [regex, setRegex] = useState(false)
   const [caseInsensitive, setCaseInsensitive] = useState(true)
   const [wholeWord, setWholeWord] = useState(false)
@@ -160,6 +165,7 @@ function App() {
   const [aroundAfter, setAroundAfter] = useState(INITIAL_EXPAND_LINES)
   const [fileSources, setFileSources] = useState<FileSource[]>([])
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([])
+  const [expandedResultKeys, setExpandedResultKeys] = useState<Set<string>>(() => new Set())
   const previewRef = useRef<HTMLDivElement | null>(null)
   const resultsRef = useRef<HTMLElement | null>(null)
 
@@ -236,7 +242,6 @@ function App() {
 
   async function runSearch(event?: FormEvent) {
     event?.preventDefault()
-    if (!query.trim()) return
 
     setLoading(true)
     setError(null)
@@ -246,6 +251,7 @@ function App() {
       setSelected(null)
       setPreviewMode('search')
       setAround(null)
+      setExpandedResultKeys(new Set())
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error')
     } finally {
@@ -377,6 +383,31 @@ function App() {
     }
   }
 
+  function toggleResultExpansion(hit: SearchHit) {
+    const key = resultKey(hit)
+    setExpandedResultKeys((current) => {
+      const next = new Set(current)
+      if (next.has(key)) {
+        next.delete(key)
+      } else {
+        next.add(key)
+      }
+      return next
+    })
+  }
+
+  function selectHitFromKeyboard(event: KeyboardEvent<HTMLDivElement>, index: number) {
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
+    selectHit(index)
+  }
+
+  function closePreview() {
+    setSelected(null)
+    setExpandedPreview(false)
+    resetPreviewState()
+  }
+
   function expandBefore() {
     void loadAround(aroundBefore + expandRows, aroundAfter, 'before')
   }
@@ -417,6 +448,15 @@ function App() {
               onClick={() => setExpandedPreview((current) => !current)}
             >
               {expanded ? '关闭' : '放大'}
+            </button>
+            <button
+              className="previewClose"
+              type="button"
+              aria-label="关闭预览"
+              title="关闭预览"
+              onClick={closePreview}
+            >
+              ×
             </button>
           </div>
         </div>
@@ -512,7 +552,7 @@ function App() {
                 />
               </div>
             </div>
-            <button type="submit" disabled={loading || !query.trim()}>
+            <button type="submit" disabled={loading}>
               Search
             </button>
           </form>
@@ -607,18 +647,41 @@ function App() {
                 </div>
               ) : null}
               {results?.hits.length ? (
-                results.hits.map((hit, index) => (
-                  <button
-                    className={`resultRow ${index === selected ? 'active' : ''}`}
-                    key={`${hit.fileId}-${hit.offset}`}
-                    type="button"
-                    onClick={() => selectHit(index)}
-                  >
-                    <span className="path">{hit.path}</span>
-                    <span className="line">:{hit.lineNo}</span>
-                    <code>{highlightText(hit.content, highlightRegex)}</code>
-                  </button>
-                ))
+                results.hits.map((hit, index) => {
+                  const key = resultKey(hit)
+                  const canCollapse = hit.content.length > COLLAPSIBLE_RESULT_LENGTH
+                  const isExpanded = expandedResultKeys.has(key)
+                  return (
+                    <div
+                      className={`resultRow ${index === selected ? 'active' : ''} ${canCollapse ? 'collapsible' : ''} ${canCollapse && !isExpanded ? 'collapsed' : ''}`}
+                      key={key}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => selectHit(index)}
+                      onKeyDown={(event) => selectHitFromKeyboard(event, index)}
+                    >
+                      {canCollapse ? (
+                        <button
+                          className="resultToggle"
+                          type="button"
+                          aria-label={isExpanded ? '收起日志行' : '展开日志行'}
+                          title={isExpanded ? '收起' : '展开'}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            toggleResultExpansion(hit)
+                          }}
+                        >
+                          {isExpanded ? '⌄' : '›'}
+                        </button>
+                      ) : (
+                        <span className="resultToggleSpacer" aria-hidden="true" />
+                      )}
+                      <span className="path">{hit.path}</span>
+                      <span className="line">:{hit.lineNo}</span>
+                      <code>{highlightText(hit.content, highlightRegex)}</code>
+                    </div>
+                  )
+                })
               ) : (
                 <div className="emptyState">
                   <strong>No results</strong>

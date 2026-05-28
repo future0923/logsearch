@@ -1,31 +1,42 @@
 Log Search
 ==========
 
-Quick start:
+快速开始：
 
-1. Edit config.toml and set the log files you want to search.
-2. Start the app:
+1. 编辑 config.toml，配置要搜索的日志文件。
+2. 后台启动服务：
 
    ./start.sh
 
-3. Open the address configured in config.toml.
-   The default is:
+3. 打开浏览器访问：
 
    http://127.0.0.1:12457
 
-Commands:
+常用命令：
+
+  ./start.sh
+      后台启动服务。
+
+  ./status.sh
+      查看服务是否正在运行。
+
+  ./stop.sh
+      停止服务。
+
+  tail -f logs/log-search.log
+      查看运行日志。
 
   ./log-search --config config.toml rebuild-index
-      Rebuild the search index from configured logs.
+      重新构建搜索索引。
 
   ./log-search --config config.toml clear-index
-      Clear the local search index.
+      清空本地搜索索引。
 
-Install as a systemd service:
+安装为 systemd 服务：
 
   sudo cp -r . /opt/log-search
   sudo cp log-search.service /etc/systemd/system/log-search.service
   sudo systemctl daemon-reload
   sudo systemctl enable --now log-search
 
-The app watches configured log files and updates the index while it runs.
+服务运行时会监听配置的日志文件，并自动更新索引。
