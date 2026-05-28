@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "vite",
     "dev:remote": "LOG_SEARCH_REMOTE=http://192.168.0.10:12457 node scripts/remote-api.mjs dev",
-    "test:remote": "LOG_SEARCH_REMOTE=http://192.168.0.10:12457 node scripts/remote-api.mjs test",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"

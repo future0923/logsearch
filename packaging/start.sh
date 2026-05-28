@@ -2,6 +2,7 @@
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${1:-${CONFIG_FILE:-config.toml}}"
 PID_FILE="$APP_DIR/run/log-search.pid"
 LOG_FILE="$APP_DIR/logs/log-search.log"
 
@@ -13,8 +14,8 @@ if [ ! -x "$APP_DIR/log-search" ]; then
   exit 1
 fi
 
-if [ ! -f "$APP_DIR/config.toml" ]; then
-  echo "config.toml not found: $APP_DIR/config.toml" >&2
+if [ ! -f "$CONFIG_FILE" ]; then
+  echo "config file not found: $CONFIG_FILE" >&2
   exit 1
 fi
 
@@ -29,7 +30,7 @@ if [ -f "$PID_FILE" ]; then
   rm -f "$PID_FILE"
 fi
 
-nohup ./log-search --config config.toml --static-dir frontend >> "$LOG_FILE" 2>&1 &
+nohup ./log-search --config "$CONFIG_FILE" --static-dir frontend >> "$LOG_FILE" 2>&1 &
 PID="$!"
 echo "$PID" > "$PID_FILE"
 

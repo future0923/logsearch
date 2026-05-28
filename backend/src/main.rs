@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::ClearIndex) => {
             rebuild_index_storage(&config.index.dir)?;
             println!("index storage cleared: {}", config.index.dir.display());
-            info!(dir = %config.index.dir.display(), "index storage cleared");
+            info!(dir = %config.index.dir.display(), "index.storage_cleared");
             return Ok(());
         }
         Some(Command::RebuildIndex) => {
@@ -94,7 +94,7 @@ async fn main() -> anyhow::Result<()> {
             info!(
                 dir = %config.index.dir.display(),
                 total_lines,
-                "index storage rebuilt"
+                "index.storage_rebuilt"
             );
             return Ok(());
         }
@@ -111,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
     let app = router(state, args.static_dir);
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    info!(%addr, "serving log search");
+    info!(%addr, "app.serving");
     axum::serve(listener, app).await?;
     Ok(())
 }

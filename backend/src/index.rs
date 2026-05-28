@@ -32,6 +32,17 @@ const INDEX_SCHEMA_VERSION_FILE: &str = "log-search-schema-version";
 const LEGACY_STATE_FILE: &str = "log-search-state.json";
 static CLI_PROGRESS_STARTED: OnceLock<Instant> = OnceLock::new();
 
+pub(crate) fn trace_index_logs_enabled() -> bool {
+    trace_index_logs_enabled_from_env(|key| std::env::var(key).ok())
+}
+
+fn trace_index_logs_enabled_from_env(get_env: impl Fn(&str) -> Option<String>) -> bool {
+    matches!(
+        get_env("LOG_SEARCH_TRACE_INDEX").as_deref(),
+        Some("1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
+    )
+}
+
 #[derive(Clone)]
 pub struct LogSearchIndex {
     index: Index,
@@ -173,7 +184,7 @@ impl LogSearchIndex {
             state_dir = %layout.state_dir.display(),
             commit_batch_size,
             schema_version = INDEX_SCHEMA_VERSION,
-            "search index ready"
+            "index.ready"
         );
 
         Ok(Self {
@@ -298,17 +309,19 @@ impl LogSearchIndex {
             file_size,
             elapsed_ms: started.elapsed().as_millis(),
         });
-        info!(
-            file_id,
-            path = %path.display(),
-            indexed_lines = count,
-            indexed_offset,
-            file_size,
-            lag_bytes = file_size.saturating_sub(indexed_offset),
-            replace,
-            duration_ms = started.elapsed().as_millis(),
-            "hot log sync completed"
-        );
+        if trace_index_logs_enabled() {
+            info!(
+                file_id,
+                path = %path.display(),
+                indexed_lines = count,
+                indexed_offset,
+                file_size,
+                lag_bytes = file_size.saturating_sub(indexed_offset),
+                replace,
+                duration_ms = started.elapsed().as_millis(),
+                "index.hot_synced"
+            );
+        }
 
         Ok(count)
     }
@@ -380,14 +393,16 @@ impl LogSearchIndex {
             file_size,
             elapsed_ms: started.elapsed().as_millis(),
         });
-        info!(
-            source_id,
-            path = %path.display(),
-            indexed_lines = count,
-            file_size,
-            duration_ms = started.elapsed().as_millis(),
-            "gzip log sync completed"
-        );
+        if trace_index_logs_enabled() {
+            info!(
+                source_id,
+                path = %path.display(),
+                indexed_lines = count,
+                file_size,
+                duration_ms = started.elapsed().as_millis(),
+                "index.gzip_synced"
+            );
+        }
 
         Ok(count)
     }
@@ -596,7 +611,7 @@ impl LogSearchIndex {
             let start_line_no = if source_idx == cursor.source_idx {
                 cursor.line_no.max(1)
             } else {
-                1
+                u64::MAX
             };
 
             let source_complete = self.scan_source_for_hits(
@@ -626,12 +641,12 @@ impl LogSearchIndex {
             whole_word = req.whole_word,
             hits = hits.len(),
             limit,
-            cursor = ?req.cursor,
-            file_ids = ?req.file_ids,
-            next_cursor = ?next_cursor,
+            file_ids = req.file_ids.len(),
+            has_cursor = req.cursor.is_some(),
+            has_next = next_cursor.is_some(),
             truncated,
             elapsed_ms,
-            "search completed"
+            "search.done"
         );
         Ok((hits, elapsed_ms, truncated, has_next, next_cursor))
     }
@@ -1370,6 +1385,26 @@ mod tests {
     }
 
     #[test]
+    fn index_trace_logging_is_off_by_default() {
+        assert!(!trace_index_logs_enabled_from_env(|_| None));
+        assert!(!trace_index_logs_enabled_from_env(|_| Some(
+            "0".to_string()
+        )));
+        assert!(!trace_index_logs_enabled_from_env(|_| Some(
+            "false".to_string()
+        )));
+    }
+
+    #[test]
+    fn index_trace_logging_accepts_explicit_opt_in_values() {
+        for value in ["1", "true", "TRUE", "yes", "YES", "on", "ON"] {
+            assert!(trace_index_logs_enabled_from_env(|_| Some(
+                value.to_string()
+            )));
+        }
+    }
+
+    #[test]
     fn editor_style_matching_finds_literal_chinese_without_ngrams() {
         let req = SearchRequest {
             query: "订单创建".to_string(),
@@ -1454,7 +1489,11 @@ mod tests {
 
         assert!(line_matches("WARN retry after timeout", &req, &regex));
         assert!(line_matches("FATAL service stopped", &req, &regex));
-        assert!(!line_matches("WARN timeout without second term", &req, &regex));
+        assert!(!line_matches(
+            "WARN timeout without second term",
+            &req,
+            &regex
+        ));
     }
 
     #[test]
@@ -1637,6 +1676,37 @@ mod tests {
     }
 
     #[test]
+    fn persistent_search_scans_selected_source_after_first_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let business_path = dir.path().join("business.log");
+        let easypay_path = dir.path().join("easypay.log");
+        std::fs::write(&business_path, "INFO business line\n").unwrap();
+        std::fs::write(&easypay_path, "INFO settlement_batch_no = '2025021'\n").unwrap();
+        let index_dir = dir.path().join("index");
+        let index = LogSearchIndex::open_or_create(&index_dir, 5000).unwrap();
+        index.sync_file("business", &business_path).unwrap();
+        index.sync_file("easypay", &easypay_path).unwrap();
+
+        let req = SearchRequest {
+            query: "settlement_batch_no".to_string(),
+            regex: false,
+            case_insensitive: true,
+            whole_word: false,
+            limit: 10,
+            cursor: None,
+            file_ids: vec!["easypay".to_string()],
+            context_before: 0,
+            context_after: 0,
+        };
+
+        let (hits, _, _, _, _) = index.search(&req).unwrap();
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].file_id, "easypay");
+        assert_eq!(hits[0].line_no, 1);
+    }
+
+    #[test]
     fn empty_query_returns_all_lines_newest_first() {
         let index = LogSearchIndex::create_in_ram().unwrap();
         index
@@ -1670,12 +1740,7 @@ mod tests {
         assert!(has_next);
         assert!(cursor.is_some());
 
-        let (next_hits, _, _, _, _) = index
-            .search(&SearchRequest {
-                cursor,
-                ..req
-            })
-            .unwrap();
+        let (next_hits, _, _, _, _) = index.search(&SearchRequest { cursor, ..req }).unwrap();
 
         assert_eq!(next_hits.len(), 1);
         assert_eq!(next_hits[0].content, "first line");

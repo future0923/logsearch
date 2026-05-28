@@ -18,7 +18,6 @@ use tower_http::{
     services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
-use tracing::info;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -72,12 +71,6 @@ async fn around(
 
 async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
     let indexing = state.index.status_snapshot();
-    info!(
-        files = state.config.files.len(),
-        index_dir = %state.config.index.dir.display(),
-        indexed_sources = indexing.len(),
-        "status requested"
-    );
     Json(StatusResponse {
         files: state.config.files.len(),
         file_sources: state

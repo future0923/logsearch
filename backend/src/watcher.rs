@@ -1,4 +1,7 @@
-use crate::{config::AppConfig, index::LogSearchIndex};
+use crate::{
+    config::AppConfig,
+    index::{LogSearchIndex, trace_index_logs_enabled},
+};
 use notify::{Event, RecursiveMode, Watcher, recommended_watcher};
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -60,7 +63,7 @@ impl WatchService {
     pub fn spawn(self) {
         tokio::spawn(async move {
             if let Err(err) = self.run().await {
-                error!(error = %err, "watch service stopped");
+                error!(error = %err, "watch.stopped");
             }
         });
     }
@@ -76,12 +79,12 @@ impl WatchService {
                     let _ = event_tx.send(path);
                 }
             }
-            Err(err) => warn!(error = %err, "file watcher event failed"),
+            Err(err) => warn!(error = %err, "watch.event_failed"),
         })?;
 
         for directory in &directories {
             watcher.watch(directory, RecursiveMode::NonRecursive)?;
-            info!(path = %directory.display(), "watching log directory");
+            info!(path = %directory.display(), "watch.dir");
         }
 
         let worker_index = self.index.clone();
@@ -138,10 +141,10 @@ pub fn spawn_initial_indexing(config: Arc<AppConfig>, index: Arc<LogSearchIndex>
         info!(
             files = config.files.len(),
             jobs = jobs.len(),
-            "initial indexing scheduled"
+            "index.initial_scheduled"
         );
         run_jobs_until_idle(index, jobs).await;
-        info!("initial indexing queue drained");
+        info!("index.initial_drained");
     });
 }
 
@@ -220,7 +223,7 @@ async fn run_worker(index: Arc<LogSearchIndex>, job: IndexJob) {
         source_id = %job.source_id(),
         kind = job.kind(),
         path = %job.path().display(),
-        "index job started"
+        "index.job_started"
     );
     let result = tokio::task::spawn_blocking(move || match job {
         IndexJob::Hot { source_id, path } => {
@@ -250,9 +253,9 @@ async fn run_worker(index: Arc<LogSearchIndex>, job: IndexJob) {
                     lines = count,
                     file_size,
                     duration_ms = started.elapsed().as_millis(),
-                    "index job completed without changes"
+                    "index.job_unchanged"
                 );
-            } else {
+            } else if trace_index_logs_enabled() {
                 info!(
                     %source_id,
                     kind,
@@ -260,19 +263,19 @@ async fn run_worker(index: Arc<LogSearchIndex>, job: IndexJob) {
                     lines = count,
                     file_size,
                     duration_ms = started.elapsed().as_millis(),
-                    "index job completed"
+                    "index.job_completed"
                 );
             }
         }
         Ok(Err(err)) => warn!(
             error = %err,
             duration_ms = started.elapsed().as_millis(),
-            "index job failed"
+            "index.job_failed"
         ),
         Err(err) => error!(
             error = %err,
             duration_ms = started.elapsed().as_millis(),
-            "index worker panicked"
+            "index.worker_panicked"
         ),
     }
 }
