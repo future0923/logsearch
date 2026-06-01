@@ -11,9 +11,9 @@ LogSearch是一个低内存、高性能、渐进式检索工具。
 - 日志持续写入时，索引自动更新。
 - 支持多种压缩格式（gz、zst、bz2、xz等）
 
-![首页](docs/images/home.png)
-
 ## 界面预览
+
+![首页](docs/images/home.png)
 
 搜索结果：
 
