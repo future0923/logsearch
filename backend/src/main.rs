@@ -70,10 +70,20 @@ async fn main() -> anyhow::Result<()> {
                         let lines = index.sync_file(&source_id, &path)?;
                         (source_id, path, "hot", lines)
                     }
-                    IndexJob::Gzip { source_id, path } => {
-                        println!("  • {} ({}, gzip)", display_file_name(&path), source_id);
-                        let lines = index.sync_gzip_file(&source_id, &path)?;
-                        (source_id, path, "gzip", lines)
+                    IndexJob::Compressed {
+                        source_id,
+                        path,
+                        kind,
+                    } => {
+                        let kind_label = kind.as_str();
+                        println!(
+                            "  • {} ({}, {})",
+                            display_file_name(&path),
+                            source_id,
+                            kind_label
+                        );
+                        let lines = index.sync_compressed_file(&source_id, &path, kind_label)?;
+                        (source_id, path, kind_label, lines)
                     }
                 };
                 total_lines += lines;

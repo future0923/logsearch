@@ -1,22 +1,23 @@
 use crate::{
     scanner::{
-        LogLine, read_context_lines, read_gzip_context_lines, scan_gzip_lines, scan_lines,
-        scan_lines_from,
+        LogLine, read_bzip2_context_lines, read_context_lines, read_gzip_context_lines,
+        read_xz_context_lines, read_zstd_context_lines, scan_bzip2_lines, scan_gzip_lines,
+        scan_lines, scan_lines_from, scan_xz_lines, scan_zstd_lines,
     },
     search::{
         AroundRequest, AroundResponse, ContextLine, SearchHit, SearchRequest, build_regex,
         contains_whole_word,
     },
     state::{
-        FileKind, FileState, IndexState, can_increment, fingerprint, generation_id,
-        gzip_fingerprint,
+        FileKind, FileState, IndexState, can_increment, compressed_fingerprint, fingerprint,
+        generation_id,
     },
 };
 use anyhow::{Context, anyhow};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{IsTerminal, Write},
+    io::{ErrorKind, IsTerminal, Write},
     path::{Path, PathBuf},
     sync::{Arc, OnceLock, RwLock},
     time::{Duration, Instant},
@@ -139,7 +140,25 @@ impl LogSearchIndex {
             .as_ref()
             .ok_or_else(|| anyhow!("persistent state directory is required"))?;
         let mut state = IndexState::load(state_dir)?;
-        let current = fingerprint(path)?;
+        let current = match fingerprint(path) {
+            Ok(current) => current,
+            Err(err) if is_not_found_error(&err) => {
+                state.files.remove(file_id);
+                state.save(state_dir)?;
+                self.record_status(IndexProgress {
+                    source_id: file_id,
+                    path,
+                    kind: "hot",
+                    phase: "missing",
+                    last_indexed_lines: 0,
+                    indexed_offset: 0,
+                    file_size: 0,
+                    elapsed_ms: started.elapsed().as_millis(),
+                });
+                return Ok(0);
+            }
+            Err(err) => return Err(err),
+        };
         let file_size = current.len;
         let previous = state.files.get(file_id);
 
@@ -235,17 +254,40 @@ impl LogSearchIndex {
         Ok(count)
     }
 
-    pub fn sync_gzip_file(&self, source_id: &str, path: &Path) -> anyhow::Result<usize> {
+    pub fn sync_compressed_file(
+        &self,
+        source_id: &str,
+        path: &Path,
+        kind: &str,
+    ) -> anyhow::Result<usize> {
         let started = Instant::now();
         let state_dir = self
             .state_dir
             .as_ref()
             .ok_or_else(|| anyhow!("persistent state directory is required"))?;
         let mut state = IndexState::load(state_dir)?;
-        let current = gzip_fingerprint(path)?;
+        let state_key = format!("{source_id}:{kind}:{}", path.display());
+        let current = match compressed_fingerprint(path) {
+            Ok(current) => current,
+            Err(err) if is_not_found_error(&err) => {
+                state.files.remove(&state_key);
+                state.save(state_dir)?;
+                self.record_status(IndexProgress {
+                    source_id,
+                    path,
+                    kind,
+                    phase: "missing",
+                    last_indexed_lines: 0,
+                    indexed_offset: 0,
+                    file_size: 0,
+                    elapsed_ms: started.elapsed().as_millis(),
+                });
+                return Ok(0);
+            }
+            Err(err) => return Err(err),
+        };
         let file_size = current.len;
         let generation_id = generation_id(source_id, &current);
-        let state_key = format!("{source_id}:gzip:{}", path.display());
 
         if let Some(previous) = state.files.get(&state_key)
             && previous.fingerprint == current
@@ -254,13 +296,14 @@ impl LogSearchIndex {
                 source_id,
                 path = %path.display(),
                 file_size,
-                "gzip log unchanged"
+                kind,
+                "compressed log unchanged"
             );
             return Ok(0);
         }
 
         let mut count = 0_usize;
-        let indexed_line_no = scan_gzip_lines(path, |_| {
+        let indexed_line_no = scan_compressed_lines(path, kind, |_| {
             count += 1;
             Ok(())
         })?;
@@ -271,7 +314,7 @@ impl LogSearchIndex {
                 path: path.to_path_buf(),
                 source_id: source_id.to_string(),
                 generation_id,
-                kind: FileKind::Gzip,
+                kind: file_kind_for_compressed(kind),
                 fingerprint: current,
                 indexed_offset: indexed_line_no,
                 indexed_line_no,
@@ -281,7 +324,7 @@ impl LogSearchIndex {
         self.record_status(IndexProgress {
             source_id,
             path,
-            kind: "gzip",
+            kind,
             phase: "complete",
             last_indexed_lines: count,
             indexed_offset: indexed_line_no,
@@ -295,7 +338,8 @@ impl LogSearchIndex {
                 indexed_lines = count,
                 file_size,
                 duration_ms = started.elapsed().as_millis(),
-                "index.gzip_synced"
+                kind,
+                "index.compressed_synced"
             );
         }
 
@@ -563,11 +607,25 @@ impl LogSearchIndex {
                         }
                     }
                 } else {
-                    scan_lines_from(&source.path, start_offset, 1, |line| collect_line(line))?;
+                    if let Err(err) =
+                        scan_lines_from(&source.path, start_offset, 1, |line| collect_line(line))
+                    {
+                        if is_not_found_error(&err) {
+                            return Ok(true);
+                        }
+                        return Err(err);
+                    }
                 }
             }
-            FileKind::Gzip => {
-                scan_gzip_lines(&source.path, |line| collect_line(line))?;
+            kind @ (FileKind::Gzip | FileKind::Zstd | FileKind::Bzip2 | FileKind::Xz) => {
+                if let Err(err) =
+                    scan_compressed_lines(&source.path, kind.as_str(), |line| collect_line(line))
+                {
+                    if is_not_found_error(&err) {
+                        return Ok(true);
+                    }
+                    return Err(err);
+                }
             }
         }
 
@@ -588,8 +646,14 @@ impl LogSearchIndex {
             let context_after = req.context_after.min(20);
             let context = if context_before == 0 && context_after == 0 {
                 Ok(Vec::new())
-            } else if matches!(source.kind, FileKind::Gzip) {
-                read_gzip_context_lines(&source.path, line.line_no, context_before, context_after)
+            } else if source.kind.is_compressed() {
+                read_compressed_context_lines(
+                    &source.path,
+                    source.kind.as_str(),
+                    line.line_no,
+                    context_before,
+                    context_after,
+                )
             } else {
                 read_context_lines(&source.path, line.line_no, context_before, context_after)
             }
@@ -619,10 +683,14 @@ impl LogSearchIndex {
         let path = Path::new(&req.path);
         let probe_before = before.saturating_add(1).min(501);
         let probe_after = after.saturating_add(1).min(501);
-        let mut lines = if req.compressed {
-            read_gzip_context_lines(path, req.line_no, probe_before, probe_after)?
+        let mut lines = match if let Some(kind) = compressed_kind_for_path(path) {
+            read_compressed_context_lines(path, kind, req.line_no, probe_before, probe_after)
         } else {
-            read_context_lines(path, req.line_no, probe_before, probe_after)?
+            read_context_lines(path, req.line_no, probe_before, probe_after)
+        } {
+            Ok(lines) => lines,
+            Err(err) if is_not_found_error(&err) => Vec::new(),
+            Err(err) => return Err(err),
         };
 
         let has_before = lines
@@ -687,6 +755,11 @@ impl LogSearchIndex {
     }
 }
 
+fn is_not_found_error(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<std::io::Error>()
+        .is_some_and(|io_err| io_err.kind() == ErrorKind::NotFound)
+}
+
 fn split_context_lines(context: &[ContextLine], line_no: u64) -> (Vec<String>, Vec<String>) {
     let mut before = Vec::new();
     let mut after = Vec::new();
@@ -722,7 +795,63 @@ impl FileKind {
             FileKind::Hot => "plain",
             FileKind::Rotated => "rotated",
             FileKind::Gzip => "gzip",
+            FileKind::Zstd => "zstd",
+            FileKind::Bzip2 => "bzip2",
+            FileKind::Xz => "xz",
         }
+    }
+
+    fn is_compressed(&self) -> bool {
+        matches!(
+            self,
+            FileKind::Gzip | FileKind::Zstd | FileKind::Bzip2 | FileKind::Xz
+        )
+    }
+}
+
+fn file_kind_for_compressed(kind: &str) -> FileKind {
+    match kind {
+        "zstd" => FileKind::Zstd,
+        "bzip2" => FileKind::Bzip2,
+        "xz" => FileKind::Xz,
+        _ => FileKind::Gzip,
+    }
+}
+
+fn compressed_kind_for_path(path: &Path) -> Option<&'static str> {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("gz") => Some("gzip"),
+        Some("zst") => Some("zstd"),
+        Some("bz2") => Some("bzip2"),
+        Some("xz") => Some("xz"),
+        _ => None,
+    }
+}
+
+fn scan_compressed_lines<F>(path: &Path, kind: &str, on_line: F) -> anyhow::Result<u64>
+where
+    F: FnMut(LogLine) -> anyhow::Result<()>,
+{
+    match kind {
+        "zstd" => scan_zstd_lines(path, on_line),
+        "bzip2" => scan_bzip2_lines(path, on_line),
+        "xz" => scan_xz_lines(path, on_line),
+        _ => scan_gzip_lines(path, on_line),
+    }
+}
+
+fn read_compressed_context_lines(
+    path: &Path,
+    kind: &str,
+    line_no: u64,
+    before: usize,
+    after: usize,
+) -> anyhow::Result<Vec<ContextLine>> {
+    match kind {
+        "zstd" => read_zstd_context_lines(path, line_no, before, after),
+        "bzip2" => read_bzip2_context_lines(path, line_no, before, after),
+        "xz" => read_xz_context_lines(path, line_no, before, after),
+        _ => read_gzip_context_lines(path, line_no, before, after),
     }
 }
 
@@ -1513,6 +1642,59 @@ mod tests {
     }
 
     #[test]
+    fn sync_file_treats_missing_hot_log_as_empty_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let index_dir = dir.path().join("index");
+        let missing_path = dir.path().join("missing.log");
+
+        let index = LogSearchIndex::open_or_create(&index_dir).unwrap();
+
+        assert_eq!(index.sync_file("app", &missing_path).unwrap(), 0);
+
+        let req = SearchRequest {
+            query: "timeout".to_string(),
+            regex: false,
+            case_insensitive: true,
+            whole_word: false,
+            limit: 10,
+            cursor: None,
+            file_ids: Vec::new(),
+            context_before: 0,
+            context_after: 0,
+        };
+        let (hits, _, _, _, _) = index.search(&req).unwrap();
+
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn search_returns_empty_when_indexed_file_was_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let index_dir = dir.path().join("index");
+        let log_path = dir.path().join("app.log");
+        std::fs::write(&log_path, "timeout before delete\n").unwrap();
+
+        let index = LogSearchIndex::open_or_create(&index_dir).unwrap();
+        index.sync_file("app", &log_path).unwrap();
+        std::fs::remove_file(&log_path).unwrap();
+
+        let req = SearchRequest {
+            query: "timeout".to_string(),
+            regex: false,
+            case_insensitive: true,
+            whole_word: false,
+            limit: 10,
+            cursor: None,
+            file_ids: Vec::new(),
+            context_before: 0,
+            context_after: 0,
+        };
+        let (hits, _, _, _, _) = index.search(&req).unwrap();
+
+        assert!(hits.is_empty());
+    }
+
+    #[test]
     fn search_returns_context_lines() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("app.log");
@@ -1612,8 +1794,18 @@ mod tests {
         encoder.finish().unwrap();
 
         let index = LogSearchIndex::open_or_create(&index_dir).unwrap();
-        assert_eq!(index.sync_gzip_file("app", &log_path).unwrap(), 3);
-        assert_eq!(index.sync_gzip_file("app", &log_path).unwrap(), 0);
+        assert_eq!(
+            index
+                .sync_compressed_file("app", &log_path, "gzip")
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            index
+                .sync_compressed_file("app", &log_path, "gzip")
+                .unwrap(),
+            0
+        );
 
         let req = SearchRequest {
             query: "archived timeout".to_string(),
@@ -1631,6 +1823,76 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].before, vec!["before"]);
         assert_eq!(hits[0].after, vec!["after"]);
+    }
+
+    #[test]
+    fn compressed_files_can_be_indexed_and_searched() {
+        let dir = tempfile::tempdir().unwrap();
+        let index_dir = dir.path().join("index");
+        let zstd_path = dir.path().join("app.log.1.zst");
+        let bzip2_path = dir.path().join("app.log.2.bz2");
+        let xz_path = dir.path().join("app.log.3.xz");
+        std::fs::write(
+            &zstd_path,
+            zstd::encode_all("one\nzstd timeout\nthree\n".as_bytes(), 0).unwrap(),
+        )
+        .unwrap();
+        write_bzip2(&bzip2_path, "one\nbzip2 timeout\nthree\n");
+        write_xz(&xz_path, "one\nxz timeout\nthree\n");
+
+        let index = LogSearchIndex::open_or_create(&index_dir).unwrap();
+        assert_eq!(
+            index
+                .sync_compressed_file("zstd", &zstd_path, "zstd")
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            index
+                .sync_compressed_file("bzip2", &bzip2_path, "bzip2")
+                .unwrap(),
+            3
+        );
+        assert_eq!(index.sync_compressed_file("xz", &xz_path, "xz").unwrap(), 3);
+
+        let req = SearchRequest {
+            query: "timeout".to_string(),
+            regex: false,
+            case_insensitive: true,
+            whole_word: false,
+            limit: 10,
+            cursor: None,
+            file_ids: Vec::new(),
+            context_before: 0,
+            context_after: 0,
+        };
+        let (hits, _, _, _, _) = index.search(&req).unwrap();
+        let kinds = hits
+            .iter()
+            .map(|hit| hit.kind.as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(kinds, BTreeSet::from(["bzip2", "xz", "zstd"]));
+    }
+
+    fn write_bzip2(path: &Path, content: &str) {
+        use bzip2::{Compression, write::BzEncoder};
+        use std::io::Write;
+
+        let file = std::fs::File::create(path).unwrap();
+        let mut encoder = BzEncoder::new(file, Compression::default());
+        write!(encoder, "{content}").unwrap();
+        encoder.finish().unwrap();
+    }
+
+    fn write_xz(path: &Path, content: &str) {
+        use std::io::Write;
+        use xz2::write::XzEncoder;
+
+        let file = std::fs::File::create(path).unwrap();
+        let mut encoder = XzEncoder::new(file, 6);
+        write!(encoder, "{content}").unwrap();
+        encoder.finish().unwrap();
     }
 
     #[test]

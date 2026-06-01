@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.102"
 axum = "0.8.9"
+bzip2 = "0.6.1"
 chrono = { version = "0.4.42", features = ["serde"] }
 clap = { version = "4.6.1", features = ["derive", "env"] }
 flate2 = "1.1.9"
@@ -22,3 +23,5 @@ tower-http = { version = "0.6.11", features = ["cors", "fs", "trace"] }
 tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 walkdir = "2.5.0"
+xz2 = "0.1.7"
+zstd = "0.13.3"

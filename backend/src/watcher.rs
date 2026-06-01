@@ -1,5 +1,5 @@
 use crate::{
-    config::AppConfig,
+    config::{AppConfig, LogDirectoryConfig},
     index::{LogSearchIndex, trace_index_logs_enabled},
 };
 use notify::{Event, RecursiveMode, Watcher, recommended_watcher};
@@ -18,27 +18,83 @@ use walkdir::WalkDir;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IndexJob {
-    Hot { source_id: String, path: PathBuf },
-    Gzip { source_id: String, path: PathBuf },
+    Hot {
+        source_id: String,
+        path: PathBuf,
+    },
+    Compressed {
+        source_id: String,
+        path: PathBuf,
+        kind: DiscoveredFileKind,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DiscoveredFileKind {
+    Hot,
+    Gzip,
+    Zstd,
+    Bzip2,
+    Xz,
+}
+
+impl DiscoveredFileKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Hot => "hot",
+            Self::Gzip => "gzip",
+            Self::Zstd => "zstd",
+            Self::Bzip2 => "bzip2",
+            Self::Xz => "xz",
+        }
+    }
+
+    pub fn is_compressed(&self) -> bool {
+        !matches!(self, Self::Hot)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiscoveredFileSource {
+    ConfiguredFile,
+    Directory { directory_id: String },
+}
+
+impl DiscoveredFileSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ConfiguredFile => "file",
+            Self::Directory { .. } => "directory",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredFile {
+    pub id: String,
+    pub path: PathBuf,
+    pub kind: DiscoveredFileKind,
+    pub source: DiscoveredFileSource,
+    pub exists: bool,
 }
 
 impl IndexJob {
     fn source_id(&self) -> &str {
         match self {
-            IndexJob::Hot { source_id, .. } | IndexJob::Gzip { source_id, .. } => source_id,
+            IndexJob::Hot { source_id, .. } | IndexJob::Compressed { source_id, .. } => source_id,
         }
     }
 
     fn path(&self) -> &Path {
         match self {
-            IndexJob::Hot { path, .. } | IndexJob::Gzip { path, .. } => path,
+            IndexJob::Hot { path, .. } | IndexJob::Compressed { path, .. } => path,
         }
     }
 
     fn kind(&self) -> &'static str {
         match self {
             IndexJob::Hot { .. } => "hot",
-            IndexJob::Gzip { .. } => "gzip",
+            IndexJob::Compressed { kind, .. } => kind.as_str(),
         }
     }
 }
@@ -82,10 +138,8 @@ impl WatchService {
             Err(err) => warn!(error = %err, "watch.event_failed"),
         })?;
 
-        for directory in &directories {
-            watcher.watch(directory, RecursiveMode::NonRecursive)?;
-            info!(path = %directory.display(), "watch.dir");
-        }
+        let mut watched = BTreeSet::new();
+        watch_ready_directories(&mut watcher, &mut watched, &directories);
 
         let worker_index = self.index.clone();
         tokio::spawn(async move { run_scheduler(worker_index, job_rx).await });
@@ -106,6 +160,7 @@ impl WatchService {
                     }
                 }
                 _ = reconcile.tick() => {
+                    watch_ready_directories(&mut watcher, &mut watched, &directories);
                     for job in reconcile_jobs(&self.config) {
                         pending.insert(job, Instant::now() + self.debounce);
                     }
@@ -133,6 +188,38 @@ impl WatchService {
         drop(watcher);
         Ok(())
     }
+}
+
+fn watch_ready_directories<W: Watcher>(
+    watcher: &mut W,
+    watched: &mut BTreeSet<PathBuf>,
+    directories: &BTreeSet<PathBuf>,
+) {
+    watched.retain(|directory| directory.exists());
+
+    for directory in ready_unwatched_directories(directories.iter().cloned(), watched) {
+        match watcher.watch(&directory, RecursiveMode::NonRecursive) {
+            Ok(()) => {
+                watched.insert(directory.clone());
+                info!(path = %directory.display(), "watch.dir");
+            }
+            Err(err) => warn!(
+                path = %directory.display(),
+                error = %err,
+                "watch.dir_failed"
+            ),
+        }
+    }
+}
+
+fn ready_unwatched_directories(
+    directories: impl IntoIterator<Item = PathBuf>,
+    watched: &BTreeSet<PathBuf>,
+) -> Vec<PathBuf> {
+    directories
+        .into_iter()
+        .filter(|directory| !watched.contains(directory) && directory.exists())
+        .collect()
 }
 
 pub fn spawn_initial_indexing(config: Arc<AppConfig>, index: Arc<LogSearchIndex>) {
@@ -233,12 +320,16 @@ async fn run_worker(index: Arc<LogSearchIndex>, job: IndexJob) {
                 .unwrap_or(0);
             Ok::<_, anyhow::Error>((source_id, path, "hot", count, file_size))
         }
-        IndexJob::Gzip { source_id, path } => {
-            let count = index.sync_gzip_file(&source_id, &path)?;
+        IndexJob::Compressed {
+            source_id,
+            path,
+            kind,
+        } => {
+            let count = index.sync_compressed_file(&source_id, &path, kind.as_str())?;
             let file_size = std::fs::metadata(&path)
                 .map(|metadata| metadata.len())
                 .unwrap_or(0);
-            Ok::<_, anyhow::Error>((source_id, path, "gzip", count, file_size))
+            Ok::<_, anyhow::Error>((source_id, path, kind.as_str(), count, file_size))
         }
     })
     .await;
@@ -281,65 +372,152 @@ async fn run_worker(index: Arc<LogSearchIndex>, job: IndexJob) {
 }
 
 pub fn watched_directories(config: &AppConfig) -> BTreeSet<PathBuf> {
-    config
+    let mut directories = config
         .files
         .iter()
         .filter_map(|file| file.path.parent().map(Path::to_path_buf))
-        .collect()
+        .collect::<BTreeSet<_>>();
+    directories.extend(
+        config
+            .directories
+            .iter()
+            .map(|directory| directory.path.clone()),
+    );
+    directories
 }
 
 pub fn jobs_for_path(config: &AppConfig, path: &Path) -> Vec<IndexJob> {
     let mut jobs = Vec::new();
-    for file in &config.files {
+    for file in discover_files(config) {
         if path == file.path {
-            jobs.push(IndexJob::Hot {
-                source_id: file.id.clone(),
-                path: file.path.clone(),
-            });
-        }
-
-        if is_gzip_candidate_for(path, &file.path) {
-            jobs.push(IndexJob::Gzip {
-                source_id: file.id.clone(),
-                path: path.to_path_buf(),
-            });
+            jobs.push(job_for_discovered_file(file));
         }
     }
     jobs
 }
 
 pub fn reconcile_jobs(config: &AppConfig) -> BTreeSet<IndexJob> {
-    let mut jobs = BTreeSet::new();
-    for file in &config.files {
-        jobs.insert(IndexJob::Hot {
-            source_id: file.id.clone(),
-            path: file.path.clone(),
-        });
+    discover_files(config)
+        .into_iter()
+        .filter(|file| file.exists)
+        .map(job_for_discovered_file)
+        .collect()
+}
 
-        if let Some(parent) = file.path.parent() {
+pub fn discover_files(config: &AppConfig) -> Vec<DiscoveredFile> {
+    let mut files = BTreeMap::<String, DiscoveredFile>::new();
+    for file in &config.files {
+        files.insert(
+            file.id.clone(),
+            DiscoveredFile {
+                id: file.id.clone(),
+                path: file.path.clone(),
+                kind: DiscoveredFileKind::Hot,
+                source: DiscoveredFileSource::ConfiguredFile,
+                exists: file.path.exists(),
+            },
+        );
+        if let Some(parent) = file.path.parent()
+            && parent.exists()
+        {
             for entry in WalkDir::new(parent)
                 .max_depth(1)
                 .into_iter()
                 .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_file())
             {
                 let path = entry.path();
-                if is_gzip_candidate_for(path, &file.path) {
-                    jobs.insert(IndexJob::Gzip {
-                        source_id: file.id.clone(),
-                        path: path.to_path_buf(),
-                    });
+                if compressed_kind(path)
+                    .is_some_and(|_| is_rotation_candidate_for(path, &file.path))
+                {
+                    let kind = compressed_kind(path).unwrap();
+                    let id = format!("{}:{}", file.id, path.display());
+                    files.insert(
+                        id.clone(),
+                        DiscoveredFile {
+                            id,
+                            path: path.to_path_buf(),
+                            kind,
+                            source: DiscoveredFileSource::ConfiguredFile,
+                            exists: true,
+                        },
+                    );
                 }
             }
         }
     }
-    jobs
-}
 
-fn is_gzip_candidate_for(path: &Path, hot_path: &Path) -> bool {
-    if path.extension().and_then(|ext| ext.to_str()) != Some("gz") {
-        return false;
+    for directory in &config.directories {
+        if !directory.path.exists() {
+            continue;
+        }
+
+        let max_depth = if directory.recursive { usize::MAX } else { 1 };
+        for entry in WalkDir::new(&directory.path)
+            .max_depth(max_depth)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+        {
+            let path = entry.path();
+            if !directory_file_matches(directory, path) {
+                continue;
+            }
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let id = format!("{}:{file_name}", directory.id);
+            files.insert(
+                id.clone(),
+                DiscoveredFile {
+                    id,
+                    path: path.to_path_buf(),
+                    kind: discovered_kind(path),
+                    source: DiscoveredFileSource::Directory {
+                        directory_id: directory.id.clone(),
+                    },
+                    exists: true,
+                },
+            );
+        }
     }
 
+    files.into_values().collect()
+}
+
+fn job_for_discovered_file(file: DiscoveredFile) -> IndexJob {
+    match file.kind {
+        DiscoveredFileKind::Hot => IndexJob::Hot {
+            source_id: file.id,
+            path: file.path,
+        },
+        kind @ (DiscoveredFileKind::Gzip
+        | DiscoveredFileKind::Zstd
+        | DiscoveredFileKind::Bzip2
+        | DiscoveredFileKind::Xz) => IndexJob::Compressed {
+            source_id: file.id,
+            path: file.path,
+            kind,
+        },
+    }
+}
+
+fn discovered_kind(path: &Path) -> DiscoveredFileKind {
+    compressed_kind(path).unwrap_or(DiscoveredFileKind::Hot)
+}
+
+fn directory_file_matches(directory: &LogDirectoryConfig, path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+
+    directory
+        .include
+        .iter()
+        .any(|pattern| file_name_matches(file_name, pattern))
+}
+
+fn is_rotation_candidate_for(path: &Path, hot_path: &Path) -> bool {
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
@@ -350,10 +528,33 @@ fn is_gzip_candidate_for(path: &Path, hot_path: &Path) -> bool {
     file_name.starts_with(hot_name)
 }
 
+fn compressed_kind(path: &Path) -> Option<DiscoveredFileKind> {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("gz") => Some(DiscoveredFileKind::Gzip),
+        Some("zst") => Some(DiscoveredFileKind::Zstd),
+        Some("bz2") => Some(DiscoveredFileKind::Bzip2),
+        Some("xz") => Some(DiscoveredFileKind::Xz),
+        _ => None,
+    }
+}
+
+fn file_name_matches(file_name: &str, pattern: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if let Some(suffix) = pattern.strip_prefix("*.") {
+        return file_name.ends_with(&format!(".{suffix}"));
+    }
+    if let Some(suffix) = pattern.strip_prefix('*') {
+        return file_name.ends_with(suffix);
+    }
+    file_name == pattern
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AppConfig, IndexConfig, LogFileConfig, ServerConfig};
+    use crate::config::{AppConfig, IndexConfig, LogDirectoryConfig, LogFileConfig, ServerConfig};
 
     fn config(path: PathBuf) -> AppConfig {
         AppConfig {
@@ -366,6 +567,25 @@ mod tests {
             files: vec![LogFileConfig {
                 id: "app".to_string(),
                 path,
+            }],
+            directories: Vec::new(),
+        }
+    }
+
+    fn directory_config(path: PathBuf) -> AppConfig {
+        AppConfig {
+            server: ServerConfig {
+                addr: "127.0.0.1:0".to_string(),
+            },
+            index: IndexConfig {
+                dir: PathBuf::from("/tmp/index"),
+            },
+            files: Vec::new(),
+            directories: vec![LogDirectoryConfig {
+                id: "release".to_string(),
+                path,
+                include: vec!["*.log".to_string(), "*.gz".to_string()],
+                recursive: false,
             }],
         }
     }
@@ -384,23 +604,160 @@ mod tests {
     }
 
     #[test]
-    fn maps_gzip_rotation_to_gzip_job() {
-        let cfg = config(PathBuf::from("/var/log/app.log"));
+    fn configured_file_still_discovers_matching_gzip_rotations() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("app.log");
+        let gzip_path = dir.path().join("app.log.1.gz");
+        std::fs::write(&log_path, "hot\n").unwrap();
+        std::fs::write(&gzip_path, "compressed placeholder\n").unwrap();
+        let cfg = config(log_path);
+
+        assert!(reconcile_jobs(&cfg).contains(&IndexJob::Compressed {
+            source_id: format!("app:{}", gzip_path.display()),
+            path: gzip_path,
+            kind: DiscoveredFileKind::Gzip,
+        }));
+    }
+
+    #[test]
+    fn reconcile_skips_hot_job_when_parent_directory_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing_path = dir.path().join("release-gone").join("app.log");
+        let cfg = config(missing_path);
+
+        assert!(reconcile_jobs(&cfg).is_empty());
+    }
+
+    #[test]
+    fn directory_config_discovers_hot_and_compressed_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("app.log");
+        let gzip_path = dir.path().join("app.log.1.gz");
+        let zstd_path = dir.path().join("app.log.2.zst");
+        let bzip2_path = dir.path().join("app.log.3.bz2");
+        let xz_path = dir.path().join("app.log.4.xz");
+        let ignored_path = dir.path().join("notes.txt");
+        std::fs::write(&log_path, "hot\n").unwrap();
+        std::fs::write(&gzip_path, "compressed placeholder\n").unwrap();
+        std::fs::write(&zstd_path, "compressed placeholder\n").unwrap();
+        std::fs::write(&bzip2_path, "compressed placeholder\n").unwrap();
+        std::fs::write(&xz_path, "compressed placeholder\n").unwrap();
+        std::fs::write(&ignored_path, "ignore\n").unwrap();
+        let mut cfg = directory_config(dir.path().to_path_buf());
+        cfg.directories[0].include = vec![
+            "*.log".to_string(),
+            "*.gz".to_string(),
+            "*.zst".to_string(),
+            "*.bz2".to_string(),
+            "*.xz".to_string(),
+        ];
+
+        let discovered = discover_files(&cfg);
 
         assert_eq!(
-            jobs_for_path(&cfg, Path::new("/var/log/app.log.1.gz")),
-            vec![IndexJob::Gzip {
-                source_id: "app".to_string(),
-                path: PathBuf::from("/var/log/app.log.1.gz")
-            }]
+            discovered,
+            vec![
+                DiscoveredFile {
+                    id: "release:app.log".to_string(),
+                    path: log_path.clone(),
+                    kind: DiscoveredFileKind::Hot,
+                    source: DiscoveredFileSource::Directory {
+                        directory_id: "release".to_string()
+                    },
+                    exists: true,
+                },
+                DiscoveredFile {
+                    id: "release:app.log.1.gz".to_string(),
+                    path: gzip_path.clone(),
+                    kind: DiscoveredFileKind::Gzip,
+                    source: DiscoveredFileSource::Directory {
+                        directory_id: "release".to_string()
+                    },
+                    exists: true,
+                },
+                DiscoveredFile {
+                    id: "release:app.log.2.zst".to_string(),
+                    path: zstd_path.clone(),
+                    kind: DiscoveredFileKind::Zstd,
+                    source: DiscoveredFileSource::Directory {
+                        directory_id: "release".to_string()
+                    },
+                    exists: true,
+                },
+                DiscoveredFile {
+                    id: "release:app.log.3.bz2".to_string(),
+                    path: bzip2_path.clone(),
+                    kind: DiscoveredFileKind::Bzip2,
+                    source: DiscoveredFileSource::Directory {
+                        directory_id: "release".to_string()
+                    },
+                    exists: true,
+                },
+                DiscoveredFile {
+                    id: "release:app.log.4.xz".to_string(),
+                    path: xz_path.clone(),
+                    kind: DiscoveredFileKind::Xz,
+                    source: DiscoveredFileSource::Directory {
+                        directory_id: "release".to_string()
+                    },
+                    exists: true,
+                },
+            ]
+        );
+        assert_eq!(
+            reconcile_jobs(&cfg),
+            BTreeSet::from([
+                IndexJob::Hot {
+                    source_id: "release:app.log".to_string(),
+                    path: log_path,
+                },
+                IndexJob::Compressed {
+                    source_id: "release:app.log.1.gz".to_string(),
+                    path: gzip_path,
+                    kind: DiscoveredFileKind::Gzip,
+                },
+                IndexJob::Compressed {
+                    source_id: "release:app.log.2.zst".to_string(),
+                    path: zstd_path,
+                    kind: DiscoveredFileKind::Zstd,
+                },
+                IndexJob::Compressed {
+                    source_id: "release:app.log.3.bz2".to_string(),
+                    path: bzip2_path,
+                    kind: DiscoveredFileKind::Bzip2,
+                },
+                IndexJob::Compressed {
+                    source_id: "release:app.log.4.xz".to_string(),
+                    path: xz_path,
+                    kind: DiscoveredFileKind::Xz,
+                },
+            ])
         );
     }
 
     #[test]
+    fn ready_unwatched_directories_become_watch_candidates_after_recreate() {
+        let dir = tempfile::tempdir().unwrap();
+        let recreated = dir.path().join("release");
+        let mut watched = BTreeSet::new();
+
+        assert!(ready_unwatched_directories([recreated.clone()], &watched).is_empty());
+
+        std::fs::create_dir(&recreated).unwrap();
+        let candidates = ready_unwatched_directories([recreated.clone()], &watched);
+
+        assert_eq!(candidates, vec![recreated.clone()]);
+
+        watched.insert(recreated.clone());
+        assert!(ready_unwatched_directories([recreated], &watched).is_empty());
+    }
+
+    #[test]
     fn source_id_is_stable_for_scheduler() {
-        let job = IndexJob::Gzip {
+        let job = IndexJob::Compressed {
             source_id: "app".to_string(),
             path: PathBuf::from("/var/log/app.log.1.gz"),
+            kind: DiscoveredFileKind::Gzip,
         };
 
         assert_eq!(job.source_id(), "app");

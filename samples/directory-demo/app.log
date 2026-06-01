@@ -1,0 +1,10 @@
+2026-06-01T10:00:00Z INFO directory-demo hot log booted service=checkout env=local
+2026-06-01T10:00:01Z INFO request received path=/api/orders user_id=U-1001 trace_id=hot-trace-001
+2026-06-01T10:00:02Z INFO order created order_id=HOT-ORDER-1001 amount=128.50 currency=CNY
+2026-06-01T10:00:03Z WARN payment retry scheduled order_id=HOT-ORDER-1001 reason=upstream timeout
+2026-06-01T10:00:04Z ERROR payment failed order_id=HOT-ORDER-1001 trace_id=hot-demo-abc error=GatewayTimeout
+2026-06-01T10:00:05Z INFO 中文测试 订单创建成功 order_id=HOT-CN-1002 trace_id=hot-cn-002
+2026-06-01T10:00:06Z WARN inventory low sku=SKU-DEMO-7 warehouse=shanghai remaining=2
+2026-06-01T10:00:07Z INFO live-search-marker hot-live-marker alpha beta gamma
+2026-06-01T10:00:08Z ERROR java.lang.IllegalStateException: demo hot stack frame at CheckoutService.pay
+2026-06-01T10:00:09Z INFO request completed status=500 latency_ms=1532 trace_id=hot-demo-abc

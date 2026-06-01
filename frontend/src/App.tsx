@@ -33,11 +33,25 @@ type SearchResponse = {
 type FileSource = {
   id: string
   path: string
+  kind: string
+  source: string
+  directoryId?: string | null
+  exists: boolean
+}
+
+type DirectorySource = {
+  id: string
+  path: string
+  recursive: boolean
+  exists: boolean
 }
 
 type StatusResponse = {
   files: number
+  directories: number
   fileSources: FileSource[]
+  configuredDirectories: DirectorySource[]
+  discoveredFiles: FileSource[]
 }
 
 type AroundResponse = {
@@ -164,6 +178,9 @@ function App() {
   const [aroundBefore, setAroundBefore] = useState(INITIAL_EXPAND_LINES)
   const [aroundAfter, setAroundAfter] = useState(INITIAL_EXPAND_LINES)
   const [fileSources, setFileSources] = useState<FileSource[]>([])
+  const [configuredDirectories, setConfiguredDirectories] = useState<DirectorySource[]>([])
+  const [discoveredFiles, setDiscoveredFiles] = useState<FileSource[]>([])
+  const [showWatchedFiles, setShowWatchedFiles] = useState(false)
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([])
   const [expandedResultKeys, setExpandedResultKeys] = useState<Set<string>>(() => new Set())
   const previewRef = useRef<HTMLDivElement | null>(null)
@@ -179,8 +196,14 @@ function App() {
         const payload = (await response.json()) as StatusResponse
         if (!alive) return
         setFileSources(payload.fileSources ?? [])
+        setConfiguredDirectories(payload.configuredDirectories ?? [])
+        setDiscoveredFiles(payload.discoveredFiles ?? [])
       } catch {
-        if (alive) setFileSources([])
+        if (alive) {
+          setFileSources([])
+          setConfiguredDirectories([])
+          setDiscoveredFiles([])
+        }
       }
     }
 
@@ -208,11 +231,15 @@ function App() {
     return `${results.total} loaded in ${results.elapsedMs} ms`
   }, [error, loading, results])
 
-  function shortPath(path: string) {
-    return path.split(/[\\/]/).pop() || path
-  }
+function shortPath(path: string) {
+  return path.split(/[\\/]/).pop() || path
+}
 
-  function selectFileScope(fileId: string) {
+function isCompressedKind(kind: string) {
+  return kind === 'gzip' || kind === 'zstd' || kind === 'bzip2' || kind === 'xz'
+}
+
+function selectFileScope(fileId: string) {
     setSelectedFileIds(fileId === 'all' ? [] : [fileId])
   }
 
@@ -317,7 +344,7 @@ function App() {
           path: hit.path,
           lineNo: hit.lineNo,
           offset: hit.offset,
-          compressed: hit.kind === 'gzip',
+          compressed: isCompressedKind(hit.kind),
           before,
           after,
         }),
@@ -606,7 +633,7 @@ function App() {
                 <option value="all">All files</option>
                 {fileSources.map((file) => (
                   <option key={file.id} value={file.id}>
-                    {file.id} · {shortPath(file.path)}
+                    {file.id} · {file.kind} · {shortPath(file.path)}
                   </option>
                 ))}
               </select>
@@ -616,13 +643,41 @@ function App() {
 
         <div className="statusLine">
           <span>{status}</span>
+          <span>{configuredDirectories.length} dirs</span>
+          <span>{discoveredFiles.length} watched files</span>
           {results?.hasNext ? <span>More available</span> : null}
           {selectedHit && selected !== null ? (
             <span>{selected + 1} / {results?.hits.length}</span>
           ) : null}
           {previewMode === 'around' ? <span>{previewLines.length} preview lines</span> : null}
           {aroundLoading ? <span>Loading lines</span> : null}
+          <button type="button" className="linkButton" onClick={() => setShowWatchedFiles((value) => !value)}>
+            {showWatchedFiles ? 'Hide watched' : 'Show watched'}
+          </button>
         </div>
+
+        {showWatchedFiles ? (
+          <section className="watchedPanel" aria-label="Watched files">
+            <div className="watchedSummary">
+              <span>{fileSources.filter((file) => file.kind === 'hot').length} hot</span>
+              <span>{fileSources.filter((file) => isCompressedKind(file.kind)).length} compressed</span>
+              <span>{configuredDirectories.filter((directory) => directory.exists).length} active dirs</span>
+            </div>
+            <div className="watchedTable">
+              {fileSources.length ? fileSources.map((file) => (
+                <div className="watchedRow" key={file.id}>
+                  <span className={`kindPill ${isCompressedKind(file.kind) ? 'compressed' : 'hot'}`}>{file.kind}</span>
+                  <span className="watchedName">{file.id}</span>
+                  <span className="watchedSource">{file.source === 'directory' ? file.directoryId : 'file'}</span>
+                  <span className="watchedPath" title={file.path}>{file.path}</span>
+                  <span className={file.exists ? 'stateOk' : 'stateMissing'}>{file.exists ? 'ready' : 'missing'}</span>
+                </div>
+              )) : (
+                <div className="watchedEmpty">No watched files</div>
+              )}
+            </div>
+          </section>
+        ) : null}
 
         {error ? <div className="errorPanel">{error}</div> : null}
 

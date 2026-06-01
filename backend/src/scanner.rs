@@ -102,6 +102,33 @@ where
     scan_reader_lines(path, decoder, 1, on_line)
 }
 
+pub fn scan_zstd_lines<F>(path: &Path, on_line: F) -> anyhow::Result<u64>
+where
+    F: FnMut(LogLine) -> anyhow::Result<()>,
+{
+    let file = File::open(path)?;
+    let decoder = zstd::stream::read::Decoder::new(file)?;
+    scan_reader_lines(path, decoder, 1, on_line)
+}
+
+pub fn scan_bzip2_lines<F>(path: &Path, on_line: F) -> anyhow::Result<u64>
+where
+    F: FnMut(LogLine) -> anyhow::Result<()>,
+{
+    let file = File::open(path)?;
+    let decoder = bzip2::read::BzDecoder::new(file);
+    scan_reader_lines(path, decoder, 1, on_line)
+}
+
+pub fn scan_xz_lines<F>(path: &Path, on_line: F) -> anyhow::Result<u64>
+where
+    F: FnMut(LogLine) -> anyhow::Result<()>,
+{
+    let file = File::open(path)?;
+    let decoder = xz2::read::XzDecoder::new(file);
+    scan_reader_lines(path, decoder, 1, on_line)
+}
+
 pub fn read_context(
     path: &Path,
     line_no: u64,
@@ -139,6 +166,39 @@ pub fn read_gzip_context_lines(
 ) -> anyhow::Result<Vec<ContextLine>> {
     let file = File::open(path)?;
     let decoder = flate2::read::GzDecoder::new(file);
+    read_context_lines_from_reader(decoder, line_no, before, after)
+}
+
+pub fn read_zstd_context_lines(
+    path: &Path,
+    line_no: u64,
+    before: usize,
+    after: usize,
+) -> anyhow::Result<Vec<ContextLine>> {
+    let file = File::open(path)?;
+    let decoder = zstd::stream::read::Decoder::new(file)?;
+    read_context_lines_from_reader(decoder, line_no, before, after)
+}
+
+pub fn read_bzip2_context_lines(
+    path: &Path,
+    line_no: u64,
+    before: usize,
+    after: usize,
+) -> anyhow::Result<Vec<ContextLine>> {
+    let file = File::open(path)?;
+    let decoder = bzip2::read::BzDecoder::new(file);
+    read_context_lines_from_reader(decoder, line_no, before, after)
+}
+
+pub fn read_xz_context_lines(
+    path: &Path,
+    line_no: u64,
+    before: usize,
+    after: usize,
+) -> anyhow::Result<Vec<ContextLine>> {
+    let file = File::open(path)?;
+    let decoder = xz2::read::XzDecoder::new(file);
     read_context_lines_from_reader(decoder, line_no, before, after)
 }
 
@@ -305,5 +365,76 @@ mod tests {
         assert_eq!(lines[1].content, "two timeout");
         assert_eq!(before, vec!["one"]);
         assert_eq!(after, vec!["three"]);
+    }
+
+    #[test]
+    fn zstd_scanner_reads_compressed_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.log.1.zst");
+        let compressed = zstd::encode_all("one\ntwo timeout\nthree\n".as_bytes(), 0).unwrap();
+        std::fs::write(&path, compressed).unwrap();
+
+        let mut lines = Vec::new();
+        let last_line = scan_zstd_lines(&path, |line| {
+            lines.push(line);
+            Ok(())
+        })
+        .unwrap();
+        let context = read_zstd_context_lines(&path, 2, 1, 1).unwrap();
+
+        assert_eq!(last_line, 3);
+        assert_eq!(lines[1].content, "two timeout");
+        assert_eq!(context.len(), 3);
+        assert_eq!(context[1].content, "two timeout");
+    }
+
+    #[test]
+    fn bzip2_scanner_reads_compressed_lines() {
+        use bzip2::{Compression, write::BzEncoder};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.log.1.bz2");
+        let file = File::create(&path).unwrap();
+        let mut encoder = BzEncoder::new(file, Compression::default());
+        write!(encoder, "one\ntwo timeout\nthree\n").unwrap();
+        encoder.finish().unwrap();
+
+        let mut lines = Vec::new();
+        let last_line = scan_bzip2_lines(&path, |line| {
+            lines.push(line);
+            Ok(())
+        })
+        .unwrap();
+        let context = read_bzip2_context_lines(&path, 2, 1, 1).unwrap();
+
+        assert_eq!(last_line, 3);
+        assert_eq!(lines[1].content, "two timeout");
+        assert_eq!(context.len(), 3);
+        assert_eq!(context[1].content, "two timeout");
+    }
+
+    #[test]
+    fn xz_scanner_reads_compressed_lines() {
+        use xz2::write::XzEncoder;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.log.1.xz");
+        let file = File::create(&path).unwrap();
+        let mut encoder = XzEncoder::new(file, 6);
+        write!(encoder, "one\ntwo timeout\nthree\n").unwrap();
+        encoder.finish().unwrap();
+
+        let mut lines = Vec::new();
+        let last_line = scan_xz_lines(&path, |line| {
+            lines.push(line);
+            Ok(())
+        })
+        .unwrap();
+        let context = read_xz_context_lines(&path, 2, 1, 1).unwrap();
+
+        assert_eq!(last_line, 3);
+        assert_eq!(lines[1].content, "two timeout");
+        assert_eq!(context.len(), 3);
+        assert_eq!(context[1].content, "two timeout");
     }
 }

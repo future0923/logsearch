@@ -37,6 +37,7 @@ mod tests {
                 id: "large".to_string(),
                 path: PathBuf::from(&log_path),
             }],
+            directories: Vec::new(),
         });
         let index = Arc::new(LogSearchIndex::open_or_create(&index_dir).unwrap());
 

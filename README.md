@@ -1,6 +1,6 @@
 # Log Search
 
-Log Search 是一个本地日志检索工具。把要看的日志文件写进配置，启动后在浏览器里搜索、筛选文件、查看上下文。
+LogSearch是一个低内存、高性能、渐进式检索工具。
 
 它适合这些场景：
 
@@ -9,6 +9,7 @@ Log Search 是一个本地日志检索工具。把要看的日志文件写进配
 - 用 `AND` / `OR` 组合条件缩小范围。
 - 点开命中行，直接查看前后上下文。
 - 日志持续写入时，索引自动更新。
+- 支持多种压缩格式（gz、zst、bz2、xz等）
 
 ![首页](docs/images/home.png)
 
@@ -80,6 +81,12 @@ path = "/var/log/my-app/app.log"
 [[files]]
 id = "worker"
 path = "/var/log/my-app/worker.log"
+
+[[directories]]
+id = "my-app"
+path = "/var/log/my-app"
+include = ["*.log", "*.gz", "*.zst", "*.bz2", "*.xz"]
+recursive = false
 ```
 
 说明：
@@ -87,6 +94,9 @@ path = "/var/log/my-app/worker.log"
 - `id` 是页面里显示的文件名/来源名，建议写短一点。
 - `path` 是真实日志路径。
 - 可以配置多个 `[[files]]`。
+- 也可以配置 `[[directories]]`，目录下匹配 `include` 的日志会自动发现并加入搜索。
+- `.gz`、`.zst`、`.bz2`、`.xz` 文件会按对应压缩格式自动解压搜索，并在页面里显示压缩类型。
+- `recursive = false` 表示只扫描目录第一层。
 - 页面里的 `File` 下拉框可以选择全部文件或某一个文件。
 
 ## 怎么搜索

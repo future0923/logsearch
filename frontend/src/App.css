@@ -191,6 +191,7 @@
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
   min-height: 30px;
   margin: 8px 0;
   color: #5f6f85;
@@ -208,6 +209,92 @@
   content: "/";
   margin-right: 8px;
   color: #9aa7b8;
+}
+
+.linkButton {
+  border: 0;
+  background: transparent;
+  color: #2252c7;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.watchedPanel {
+  margin: 0 0 12px;
+  border: 1px solid #d4dbe6;
+  border-radius: 8px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.watchedSummary {
+  display: flex;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #e4eaf2;
+  color: #526176;
+  font-size: 13px;
+}
+
+.watchedTable {
+  display: grid;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.watchedRow {
+  display: grid;
+  grid-template-columns: 56px minmax(120px, 0.75fr) 96px minmax(180px, 1.5fr) 72px;
+  gap: 10px;
+  align-items: center;
+  min-height: 36px;
+  padding: 7px 12px;
+  border-bottom: 1px solid #eef2f7;
+  color: #334155;
+  font-size: 13px;
+}
+
+.watchedName,
+.watchedSource,
+.watchedPath {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.watchedSource {
+  color: #64748b;
+}
+
+.kindPill {
+  justify-self: start;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #e8f3ee;
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.kindPill.compressed {
+  background: #fff0b8;
+  color: #6f4b00;
+}
+
+.stateOk {
+  color: #0f766e;
+}
+
+.stateMissing {
+  color: #b42318;
+}
+
+.watchedEmpty {
+  padding: 12px;
+  color: #64748b;
+  font-size: 13px;
 }
 
 .errorPanel {

@@ -12,6 +12,8 @@ pub struct AppConfig {
     pub index: IndexConfig,
     #[serde(default)]
     pub files: Vec<LogFileConfig>,
+    #[serde(default)]
+    pub directories: Vec<LogDirectoryConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -30,6 +32,16 @@ pub struct IndexConfig {
 pub struct LogFileConfig {
     pub id: String,
     pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LogDirectoryConfig {
+    pub id: String,
+    pub path: PathBuf,
+    #[serde(default = "default_directory_include")]
+    pub include: Vec<String>,
+    #[serde(default)]
+    pub recursive: bool,
 }
 
 impl Default for ServerConfig {
@@ -68,6 +80,13 @@ impl AppConfig {
             file.path = absolutize(&file.path)?;
         }
 
+        for directory in &mut cfg.directories {
+            if directory.path.is_relative() {
+                directory.path = base.join(&directory.path);
+            }
+            directory.path = absolutize(&directory.path)?;
+        }
+
         Ok(cfg)
     }
 }
@@ -90,4 +109,50 @@ fn default_addr() -> String {
 
 fn default_index_dir() -> PathBuf {
     PathBuf::from("./data/index")
+}
+
+fn default_directory_include() -> Vec<String> {
+    vec![
+        "*.log".to_string(),
+        "*.gz".to_string(),
+        "*.zst".to_string(),
+        "*.bz2".to_string(),
+        "*.xz".to_string(),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_directory_sources_with_default_log_patterns() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs_dir = dir.path().join("logs");
+        std::fs::create_dir(&logs_dir).unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[index]
+dir = "./index"
+
+[[directories]]
+id = "release"
+path = "./logs"
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(&config_path).unwrap();
+
+        assert_eq!(config.directories.len(), 1);
+        assert_eq!(config.directories[0].id, "release");
+        assert_eq!(config.directories[0].path, logs_dir.canonicalize().unwrap());
+        assert_eq!(
+            config.directories[0].include,
+            vec!["*.log", "*.gz", "*.zst", "*.bz2", "*.xz"]
+        );
+        assert!(!config.directories[0].recursive);
+    }
 }

@@ -2,7 +2,7 @@ use crate::{
     config::AppConfig,
     index::{IndexStatus, LogSearchIndex},
     search::{AroundRequest, AroundResponse, SearchRequest, SearchResponse},
-    watcher::watched_directories,
+    watcher::{DiscoveredFileSource, discover_files, watched_directories},
 };
 use axum::{
     Json, Router,
@@ -29,7 +29,10 @@ pub struct AppState {
 #[serde(rename_all = "camelCase")]
 struct StatusResponse {
     files: usize,
+    directories: usize,
     file_sources: Vec<FileSourceResponse>,
+    configured_directories: Vec<DirectorySourceResponse>,
+    discovered_files: Vec<DiscoveredFileResponse>,
     index_dir: String,
     watched_directories: Vec<String>,
     indexing: Vec<IndexStatus>,
@@ -40,6 +43,30 @@ struct StatusResponse {
 struct FileSourceResponse {
     id: String,
     path: String,
+    kind: String,
+    source: String,
+    directory_id: Option<String>,
+    exists: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirectorySourceResponse {
+    id: String,
+    path: String,
+    recursive: bool,
+    exists: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscoveredFileResponse {
+    id: String,
+    path: String,
+    kind: String,
+    source: String,
+    directory_id: Option<String>,
+    exists: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -71,16 +98,25 @@ async fn around(
 
 async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
     let indexing = state.index.status_snapshot();
+    let discovered_files = discover_files(&state.config);
     Json(StatusResponse {
         files: state.config.files.len(),
-        file_sources: state
+        directories: state.config.directories.len(),
+        file_sources: discovered_files.iter().map(file_source_response).collect(),
+        configured_directories: state
             .config
-            .files
+            .directories
             .iter()
-            .map(|file| FileSourceResponse {
-                id: file.id.clone(),
-                path: file.path.to_string_lossy().to_string(),
+            .map(|directory| DirectorySourceResponse {
+                id: directory.id.clone(),
+                path: directory.path.to_string_lossy().to_string(),
+                recursive: directory.recursive,
+                exists: directory.path.exists(),
             })
+            .collect(),
+        discovered_files: discovered_files
+            .iter()
+            .map(discovered_file_response)
             .collect(),
         index_dir: state.config.index.dir.to_string_lossy().to_string(),
         watched_directories: watched_directories(&state.config)
@@ -89,6 +125,33 @@ async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
             .collect(),
         indexing,
     })
+}
+
+fn file_source_response(file: &crate::watcher::DiscoveredFile) -> FileSourceResponse {
+    let directory_id = match &file.source {
+        DiscoveredFileSource::Directory { directory_id } => Some(directory_id.clone()),
+        DiscoveredFileSource::ConfiguredFile => None,
+    };
+    FileSourceResponse {
+        id: file.id.clone(),
+        path: file.path.to_string_lossy().to_string(),
+        kind: file.kind.as_str().to_string(),
+        source: file.source.as_str().to_string(),
+        directory_id,
+        exists: file.exists,
+    }
+}
+
+fn discovered_file_response(file: &crate::watcher::DiscoveredFile) -> DiscoveredFileResponse {
+    let source = file_source_response(file);
+    DiscoveredFileResponse {
+        id: source.id,
+        path: source.path,
+        kind: source.kind,
+        source: source.source,
+        directory_id: source.directory_id,
+        exists: source.exists,
+    }
 }
 
 async fn search(

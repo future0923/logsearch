@@ -11,3 +11,9 @@ path = "./samples/app.log"
 [[files]]
 id = "worker"
 path = "./samples/worker.log"
+
+[[directories]]
+id = "samples"
+path = "./samples"
+include = ["*.log", "*.gz", "*.zst", "*.bz2", "*.xz"]
+recursive = false

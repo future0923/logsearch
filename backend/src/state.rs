@@ -25,12 +25,15 @@ pub struct FileState {
     pub indexed_line_no: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum FileKind {
     Hot,
     Rotated,
     Gzip,
+    Zstd,
+    Bzip2,
+    Xz,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -82,7 +85,7 @@ pub fn fingerprint(path: &Path) -> anyhow::Result<FileFingerprint> {
     })
 }
 
-pub fn gzip_fingerprint(path: &Path) -> anyhow::Result<FileFingerprint> {
+pub fn compressed_fingerprint(path: &Path) -> anyhow::Result<FileFingerprint> {
     let mut fingerprint = fingerprint(path)?;
     fingerprint.sha256_prefix = Some(sha256_prefix(path, 1024 * 1024)?);
     Ok(fingerprint)
