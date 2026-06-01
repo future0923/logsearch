@@ -52,6 +52,7 @@ type StatusResponse = {
   fileSources: FileSource[]
   configuredDirectories: DirectorySource[]
   discoveredFiles: FileSource[]
+  discoveredFilesTruncated?: boolean
 }
 
 type AroundResponse = {
@@ -180,6 +181,7 @@ function App() {
   const [fileSources, setFileSources] = useState<FileSource[]>([])
   const [configuredDirectories, setConfiguredDirectories] = useState<DirectorySource[]>([])
   const [discoveredFiles, setDiscoveredFiles] = useState<FileSource[]>([])
+  const [discoveredFilesTruncated, setDiscoveredFilesTruncated] = useState(false)
   const [showWatchedFiles, setShowWatchedFiles] = useState(false)
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([])
   const [expandedResultKeys, setExpandedResultKeys] = useState<Set<string>>(() => new Set())
@@ -198,11 +200,13 @@ function App() {
         setFileSources(payload.fileSources ?? [])
         setConfiguredDirectories(payload.configuredDirectories ?? [])
         setDiscoveredFiles(payload.discoveredFiles ?? [])
+        setDiscoveredFilesTruncated(Boolean(payload.discoveredFilesTruncated))
       } catch {
         if (alive) {
           setFileSources([])
           setConfiguredDirectories([])
           setDiscoveredFiles([])
+          setDiscoveredFilesTruncated(false)
         }
       }
     }
@@ -644,7 +648,7 @@ function selectFileScope(fileId: string) {
         <div className="statusLine">
           <span>{status}</span>
           <span>{configuredDirectories.length} dirs</span>
-          <span>{discoveredFiles.length} watched files</span>
+          <span>{discoveredFiles.length}{discoveredFilesTruncated ? '+' : ''} watched files</span>
           {results?.hasNext ? <span>More available</span> : null}
           {selectedHit && selected !== null ? (
             <span>{selected + 1} / {results?.hits.length}</span>

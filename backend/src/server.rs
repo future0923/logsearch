@@ -19,7 +19,7 @@ mod tests {
     use std::{path::PathBuf, time::Instant};
 
     #[tokio::test]
-    async fn build_app_state_does_not_block_on_initial_file_indexing() {
+    async fn build_app_state_starts_bounded_metadata_preheat() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("large.log");
         let index_dir = dir.path().join("index");
@@ -42,11 +42,19 @@ mod tests {
         let index = Arc::new(LogSearchIndex::open_or_create(&index_dir).unwrap());
 
         let started = Instant::now();
-        let _state = build_app_state(config, index);
+        let _state = build_app_state(config, index.clone());
 
         assert!(
             started.elapsed().as_millis() < 200,
             "startup should not wait for large log indexing"
         );
+
+        for _ in 0..20 {
+            if !index.status_snapshot().is_empty() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!("startup should schedule metadata preheat in the background");
     }
 }

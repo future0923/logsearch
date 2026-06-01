@@ -2,7 +2,7 @@ use crate::{
     scanner::{
         LogLine, read_bzip2_context_lines, read_context_lines, read_gzip_context_lines,
         read_xz_context_lines, read_zstd_context_lines, scan_bzip2_lines, scan_gzip_lines,
-        scan_lines, scan_lines_from, scan_xz_lines, scan_zstd_lines,
+        scan_lines, scan_lines_from, scan_lines_range, scan_xz_lines, scan_zstd_lines,
     },
     search::{
         AroundRequest, AroundResponse, ContextLine, SearchHit, SearchRequest, build_regex,
@@ -15,7 +15,7 @@ use crate::{
 };
 use anyhow::{Context, anyhow};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
     io::{ErrorKind, IsTerminal, Write},
     path::{Path, PathBuf},
@@ -254,6 +254,69 @@ impl LogSearchIndex {
         Ok(count)
     }
 
+    pub fn sync_file_metadata(&self, file_id: &str, path: &Path) -> anyhow::Result<usize> {
+        let started = Instant::now();
+        let state_dir = self
+            .state_dir
+            .as_ref()
+            .ok_or_else(|| anyhow!("persistent state directory is required"))?;
+        let mut state = IndexState::load(state_dir)?;
+        let current = match fingerprint(path) {
+            Ok(current) => current,
+            Err(err) if is_not_found_error(&err) => {
+                state.files.remove(file_id);
+                state.save(state_dir)?;
+                self.record_status(IndexProgress {
+                    source_id: file_id,
+                    path,
+                    kind: "hot",
+                    phase: "missing",
+                    last_indexed_lines: 0,
+                    indexed_offset: 0,
+                    file_size: 0,
+                    elapsed_ms: started.elapsed().as_millis(),
+                });
+                return Ok(0);
+            }
+            Err(err) => return Err(err),
+        };
+        let file_size = current.len;
+        let previous = state.files.get(file_id);
+        let indexed_line_no = if let Some(previous) = previous
+            && previous.path == path
+            && can_increment(previous, &current)
+        {
+            previous.indexed_line_no
+        } else {
+            0
+        };
+
+        state.files.insert(
+            file_id.to_string(),
+            FileState {
+                path: path.to_path_buf(),
+                source_id: file_id.to_string(),
+                generation_id: generation_id(file_id, &current),
+                kind: FileKind::Hot,
+                fingerprint: current,
+                indexed_offset: file_size,
+                indexed_line_no,
+            },
+        );
+        state.save(state_dir)?;
+        self.record_status(IndexProgress {
+            source_id: file_id,
+            path,
+            kind: "hot",
+            phase: "idle",
+            last_indexed_lines: 0,
+            indexed_offset: file_size,
+            file_size,
+            elapsed_ms: started.elapsed().as_millis(),
+        });
+        Ok(0)
+    }
+
     pub fn sync_compressed_file(
         &self,
         source_id: &str,
@@ -292,6 +355,16 @@ impl LogSearchIndex {
         if let Some(previous) = state.files.get(&state_key)
             && previous.fingerprint == current
         {
+            self.record_status(IndexProgress {
+                source_id,
+                path,
+                kind,
+                phase: "idle",
+                last_indexed_lines: 0,
+                indexed_offset: previous.indexed_offset,
+                file_size,
+                elapsed_ms: started.elapsed().as_millis(),
+            });
             debug!(
                 source_id,
                 path = %path.display(),
@@ -344,6 +417,72 @@ impl LogSearchIndex {
         }
 
         Ok(count)
+    }
+
+    pub fn sync_compressed_file_metadata(
+        &self,
+        source_id: &str,
+        path: &Path,
+        kind: &str,
+    ) -> anyhow::Result<usize> {
+        let started = Instant::now();
+        let state_dir = self
+            .state_dir
+            .as_ref()
+            .ok_or_else(|| anyhow!("persistent state directory is required"))?;
+        let mut state = IndexState::load(state_dir)?;
+        let state_key = format!("{source_id}:{kind}:{}", path.display());
+        let current = match fingerprint(path) {
+            Ok(current) => current,
+            Err(err) if is_not_found_error(&err) => {
+                state.files.remove(&state_key);
+                state.save(state_dir)?;
+                self.record_status(IndexProgress {
+                    source_id,
+                    path,
+                    kind,
+                    phase: "missing",
+                    last_indexed_lines: 0,
+                    indexed_offset: 0,
+                    file_size: 0,
+                    elapsed_ms: started.elapsed().as_millis(),
+                });
+                return Ok(0);
+            }
+            Err(err) => return Err(err),
+        };
+        let file_size = current.len;
+        let previous_line_no = state
+            .files
+            .get(&state_key)
+            .filter(|previous| previous.fingerprint == current)
+            .map(|previous| previous.indexed_line_no)
+            .unwrap_or(0);
+
+        state.files.insert(
+            state_key,
+            FileState {
+                path: path.to_path_buf(),
+                source_id: source_id.to_string(),
+                generation_id: generation_id(source_id, &current),
+                kind: file_kind_for_compressed(kind),
+                fingerprint: current,
+                indexed_offset: file_size,
+                indexed_line_no: previous_line_no,
+            },
+        );
+        state.save(state_dir)?;
+        self.record_status(IndexProgress {
+            source_id,
+            path,
+            kind,
+            phase: "idle",
+            last_indexed_lines: 0,
+            indexed_offset: file_size,
+            file_size,
+            elapsed_ms: started.elapsed().as_millis(),
+        });
+        Ok(0)
     }
 
     fn record_status(&self, progress: IndexProgress<'_>) {
@@ -580,7 +719,7 @@ impl LogSearchIndex {
         has_next: &mut bool,
         next_cursor: &mut Option<String>,
     ) -> anyhow::Result<bool> {
-        let mut matched_lines = Vec::new();
+        let mut matched_lines = VecDeque::with_capacity(limit + 1);
         let mut collect_line = |line: LogLine| -> anyhow::Result<()> {
             if line.line_no >= start_line_no {
                 return Ok(());
@@ -590,7 +729,10 @@ impl LogSearchIndex {
                 return Ok(());
             }
 
-            matched_lines.push(line);
+            if matched_lines.len() == limit + 1 {
+                matched_lines.pop_front();
+            }
+            matched_lines.push_back(line);
             Ok(())
         };
 
@@ -607,8 +749,9 @@ impl LogSearchIndex {
                         }
                     }
                 } else {
+                    let end_offset = (start_offset > 0).then_some(start_offset);
                     if let Err(err) =
-                        scan_lines_from(&source.path, start_offset, 1, |line| collect_line(line))
+                        scan_lines_range(&source.path, 0, end_offset, 1, |line| collect_line(line))
                     {
                         if is_not_found_error(&err) {
                             return Ok(true);
@@ -629,15 +772,22 @@ impl LogSearchIndex {
             }
         }
 
-        matched_lines.sort_by(|a, b| b.line_no.cmp(&a.line_no));
+        let mut matched_lines = matched_lines.into_iter().rev();
+        let mut last_returned_line: Option<(u64, u64)> = None;
 
-        for line in matched_lines {
+        for line in &mut matched_lines {
             if hits.len() == limit {
+                let (cursor_offset, cursor_line_no) =
+                    last_returned_line.unwrap_or((line.offset, line.line_no.saturating_add(1)));
                 *has_next = true;
                 *next_cursor = Some(encode_search_cursor(SearchCursor {
                     source_idx,
-                    offset: 0,
-                    line_no: line.line_no.saturating_add(1),
+                    offset: if source.kind.is_compressed() {
+                        0
+                    } else {
+                        cursor_offset
+                    },
+                    line_no: cursor_line_no,
                 }));
                 return Ok(false);
             }
@@ -672,6 +822,7 @@ impl LogSearchIndex {
                 after,
                 context,
             });
+            last_returned_line = hits.last().map(|hit| (hit.offset, hit.line_no));
         }
 
         Ok(true)
@@ -1471,6 +1622,97 @@ mod tests {
     }
 
     #[test]
+    fn search_keeps_only_newest_matches_needed_for_page() {
+        let index = LogSearchIndex::create_in_ram().unwrap();
+        let lines = (1..=1_000)
+            .map(|line_no| {
+                line(
+                    "/tmp/app.log",
+                    line_no,
+                    line_no * 10,
+                    &format!("ERROR timeout item={line_no}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        index.index_lines("app", &lines).unwrap();
+
+        let req = SearchRequest {
+            query: "timeout".to_string(),
+            regex: false,
+            case_insensitive: true,
+            whole_word: false,
+            limit: 3,
+            cursor: None,
+            file_ids: Vec::new(),
+            context_before: 0,
+            context_after: 0,
+        };
+        let (hits, _, _, has_next, cursor) = index.search(&req).unwrap();
+
+        assert_eq!(
+            hits.iter().map(|hit| hit.line_no).collect::<Vec<_>>(),
+            vec![1_000, 999, 998]
+        );
+        assert!(has_next);
+
+        let (next_hits, _, _, _, _) = index.search(&SearchRequest { cursor, ..req }).unwrap();
+
+        assert_eq!(
+            next_hits.iter().map(|hit| hit.line_no).collect::<Vec<_>>(),
+            vec![997, 996, 995]
+        );
+    }
+
+    #[test]
+    fn persistent_plain_search_cursor_uses_byte_offset_for_next_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let index_dir = dir.path().join("index");
+        let log_path = dir.path().join("app.log");
+        std::fs::write(
+            &log_path,
+            "ERROR timeout item=1\nERROR timeout item=2\nERROR timeout item=3\nERROR timeout item=4\nERROR timeout item=5\n",
+        )
+        .unwrap();
+        let index = LogSearchIndex::open_or_create(&index_dir).unwrap();
+        index.sync_file("app", &log_path).unwrap();
+
+        let req = SearchRequest {
+            query: "timeout".to_string(),
+            regex: false,
+            case_insensitive: true,
+            whole_word: false,
+            limit: 2,
+            cursor: None,
+            file_ids: Vec::new(),
+            context_before: 0,
+            context_after: 0,
+        };
+        let (first_hits, _, _, has_next, cursor) = index.search(&req).unwrap();
+
+        assert_eq!(
+            first_hits.iter().map(|hit| hit.line_no).collect::<Vec<_>>(),
+            vec![5, 4]
+        );
+        assert!(has_next);
+        let cursor = decode_search_cursor(cursor.as_deref()).unwrap();
+        assert_eq!(cursor.line_no, 4);
+        assert_eq!(cursor.offset, first_hits[1].offset);
+
+        let encoded_cursor = Some(encode_search_cursor(cursor));
+        let (next_hits, _, _, _, _) = index
+            .search(&SearchRequest {
+                cursor: encoded_cursor,
+                ..req
+            })
+            .unwrap();
+
+        assert_eq!(
+            next_hits.iter().map(|hit| hit.line_no).collect::<Vec<_>>(),
+            vec![3, 2]
+        );
+    }
+
+    #[test]
     fn persistent_search_scans_selected_source_after_first_source() {
         let dir = tempfile::tempdir().unwrap();
         let business_path = dir.path().join("business.log");
@@ -1639,6 +1881,69 @@ mod tests {
         let (hits, _, _, _, _) = index.search(&req).unwrap();
 
         assert_eq!(hits.len(), 2);
+    }
+
+    #[test]
+    fn sync_file_metadata_does_not_read_log_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let index_dir = dir.path().join("index");
+        let log_path = dir.path().join("app.log");
+        std::fs::write(&log_path, b"ok\n\xff\xfeinvalid utf8\n").unwrap();
+        let index = LogSearchIndex::open_or_create(&index_dir).unwrap();
+
+        assert_eq!(index.sync_file_metadata("app", &log_path).unwrap(), 0);
+
+        let state = IndexState::load(&index_dir).unwrap();
+        let file = state.files.get("app").unwrap();
+        assert_eq!(file.indexed_offset, std::fs::metadata(&log_path).unwrap().len());
+    }
+
+    #[test]
+    fn search_reads_file_after_metadata_only_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let index_dir = dir.path().join("index");
+        let log_path = dir.path().join("app.log");
+        std::fs::write(&log_path, "first timeout\nsecond timeout\n").unwrap();
+        let index = LogSearchIndex::open_or_create(&index_dir).unwrap();
+        index.sync_file_metadata("app", &log_path).unwrap();
+
+        let req = SearchRequest {
+            query: "timeout".to_string(),
+            regex: false,
+            case_insensitive: true,
+            whole_word: false,
+            limit: 10,
+            cursor: None,
+            file_ids: Vec::new(),
+            context_before: 0,
+            context_after: 0,
+        };
+        let (hits, _, _, _, _) = index.search(&req).unwrap();
+
+        assert_eq!(
+            hits.iter().map(|hit| hit.line_no).collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+    }
+
+    #[test]
+    fn sync_compressed_file_metadata_does_not_decompress_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let index_dir = dir.path().join("index");
+        let log_path = dir.path().join("app.log.1.gz");
+        std::fs::write(&log_path, b"not actually gzip").unwrap();
+        let index = LogSearchIndex::open_or_create(&index_dir).unwrap();
+
+        assert_eq!(
+            index
+                .sync_compressed_file_metadata("app", &log_path, "gzip")
+                .unwrap(),
+            0
+        );
+
+        let state = IndexState::load(&index_dir).unwrap();
+        let state_key = format!("app:gzip:{}", log_path.display());
+        assert!(state.files.contains_key(&state_key));
     }
 
     #[test]

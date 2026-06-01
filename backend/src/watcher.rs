@@ -11,10 +11,14 @@ use std::{
 };
 use tokio::{
     sync::mpsc,
-    time::{Instant, interval_at, sleep_until},
+    time::{Instant, sleep_until},
 };
 use tracing::{debug, error, info, warn};
 use walkdir::WalkDir;
+
+const MAX_CONCURRENT_INDEX_JOBS: usize = 1;
+pub const MAX_DISCOVERED_FILES: usize = 2_000;
+const MAX_PENDING_INDEX_JOBS: usize = 2_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IndexJob {
@@ -103,7 +107,6 @@ pub struct WatchService {
     config: Arc<AppConfig>,
     index: Arc<LogSearchIndex>,
     debounce: Duration,
-    reconcile_interval: Duration,
 }
 
 impl WatchService {
@@ -112,7 +115,6 @@ impl WatchService {
             config,
             index,
             debounce: Duration::from_millis(700),
-            reconcile_interval: Duration::from_secs(15),
         }
     }
 
@@ -125,14 +127,14 @@ impl WatchService {
     }
 
     async fn run(self) -> anyhow::Result<()> {
-        let (event_tx, mut event_rx) = mpsc::unbounded_channel::<PathBuf>();
-        let (job_tx, job_rx) = mpsc::unbounded_channel::<IndexJob>();
+        let (event_tx, mut event_rx) = mpsc::channel::<PathBuf>(MAX_PENDING_INDEX_JOBS);
+        let (job_tx, job_rx) = mpsc::channel::<IndexJob>(MAX_PENDING_INDEX_JOBS);
         let directories = watched_directories(&self.config);
 
         let mut watcher = recommended_watcher(move |event: notify::Result<Event>| match event {
             Ok(event) => {
                 for path in event.paths {
-                    let _ = event_tx.send(path);
+                    let _ = event_tx.try_send(path);
                 }
             }
             Err(err) => warn!(error = %err, "watch.event_failed"),
@@ -145,10 +147,6 @@ impl WatchService {
         tokio::spawn(async move { run_scheduler(worker_index, job_rx).await });
 
         let mut pending: BTreeMap<IndexJob, Instant> = BTreeMap::new();
-        let mut reconcile = interval_at(
-            Instant::now() + self.reconcile_interval,
-            self.reconcile_interval,
-        );
 
         loop {
             let next_due = pending.values().next().copied();
@@ -156,12 +154,9 @@ impl WatchService {
                 maybe_path = event_rx.recv() => {
                     let Some(path) = maybe_path else { break; };
                     for job in jobs_for_path(&self.config, &path) {
-                        pending.insert(job, Instant::now() + self.debounce);
-                    }
-                }
-                _ = reconcile.tick() => {
-                    watch_ready_directories(&mut watcher, &mut watched, &directories);
-                    for job in reconcile_jobs(&self.config) {
+                        if pending.len() >= MAX_PENDING_INDEX_JOBS {
+                            break;
+                        }
                         pending.insert(job, Instant::now() + self.debounce);
                     }
                 }
@@ -179,7 +174,7 @@ impl WatchService {
                         .collect();
                     for job in ready {
                         pending.remove(&job);
-                        let _ = job_tx.send(job);
+                        let _ = job_tx.try_send(job);
                     }
                 }
             }
@@ -235,7 +230,7 @@ pub fn spawn_initial_indexing(config: Arc<AppConfig>, index: Arc<LogSearchIndex>
     });
 }
 
-async fn run_scheduler(index: Arc<LogSearchIndex>, mut rx: mpsc::UnboundedReceiver<IndexJob>) {
+async fn run_scheduler(index: Arc<LogSearchIndex>, mut rx: mpsc::Receiver<IndexJob>) {
     let (done_tx, mut done_rx) = mpsc::unbounded_channel::<String>();
     let mut running_sources = HashSet::<String>::new();
     let mut queued = BTreeSet::<IndexJob>::new();
@@ -283,17 +278,31 @@ fn dispatch_ready_jobs(
     queued: &mut BTreeSet<IndexJob>,
     running_sources: &mut HashSet<String>,
 ) {
-    let ready: Vec<IndexJob> = queued
-        .iter()
-        .filter(|job| !running_sources.contains(job.source_id()))
-        .cloned()
-        .collect();
+    let ready = select_ready_jobs(queued, running_sources, MAX_CONCURRENT_INDEX_JOBS);
 
     for job in ready {
         queued.remove(&job);
         running_sources.insert(job.source_id().to_string());
         spawn_job(index.clone(), done_tx.clone(), job);
     }
+}
+
+fn select_ready_jobs(
+    queued: &BTreeSet<IndexJob>,
+    running_sources: &HashSet<String>,
+    max_concurrent: usize,
+) -> Vec<IndexJob> {
+    let available_slots = max_concurrent.saturating_sub(running_sources.len());
+    if available_slots == 0 {
+        return Vec::new();
+    }
+
+    queued
+        .iter()
+        .filter(|job| !running_sources.contains(job.source_id()))
+        .take(available_slots)
+        .cloned()
+        .collect()
 }
 
 fn spawn_job(index: Arc<LogSearchIndex>, done_tx: mpsc::UnboundedSender<String>, job: IndexJob) {
@@ -314,7 +323,7 @@ async fn run_worker(index: Arc<LogSearchIndex>, job: IndexJob) {
     );
     let result = tokio::task::spawn_blocking(move || match job {
         IndexJob::Hot { source_id, path } => {
-            let count = index.sync_file(&source_id, &path)?;
+            let count = index.sync_file_metadata(&source_id, &path)?;
             let file_size = std::fs::metadata(&path)
                 .map(|metadata| metadata.len())
                 .unwrap_or(0);
@@ -325,7 +334,7 @@ async fn run_worker(index: Arc<LogSearchIndex>, job: IndexJob) {
             path,
             kind,
         } => {
-            let count = index.sync_compressed_file(&source_id, &path, kind.as_str())?;
+            let count = index.sync_compressed_file_metadata(&source_id, &path, kind.as_str())?;
             let file_size = std::fs::metadata(&path)
                 .map(|metadata| metadata.len())
                 .unwrap_or(0);
@@ -388,12 +397,58 @@ pub fn watched_directories(config: &AppConfig) -> BTreeSet<PathBuf> {
 
 pub fn jobs_for_path(config: &AppConfig, path: &Path) -> Vec<IndexJob> {
     let mut jobs = Vec::new();
-    for file in discover_files(config) {
+    for file in &config.files {
         if path == file.path {
-            jobs.push(job_for_discovered_file(file));
+            jobs.push(IndexJob::Hot {
+                source_id: file.id.clone(),
+                path: path.to_path_buf(),
+            });
+            continue;
+        }
+        if compressed_kind(path).is_some_and(|_| is_rotation_candidate_for(path, &file.path)) {
+            jobs.push(IndexJob::Compressed {
+                source_id: format!("{}:{}", file.id, path.display()),
+                path: path.to_path_buf(),
+                kind: discovered_kind(path),
+            });
+        }
+    }
+
+    for directory in &config.directories {
+        if !path_is_in_directory(path, &directory.path, directory.recursive) {
+            continue;
+        }
+        if !directory_file_matches(directory, path) {
+            continue;
+        }
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let id = format!("{}:{file_name}", directory.id);
+        let job = match discovered_kind(path) {
+            DiscoveredFileKind::Hot => IndexJob::Hot {
+                source_id: id,
+                path: path.to_path_buf(),
+            },
+            kind => IndexJob::Compressed {
+                source_id: id,
+                path: path.to_path_buf(),
+                kind,
+            },
+        };
+        if !jobs.contains(&job) {
+            jobs.push(job);
         }
     }
     jobs
+}
+
+fn path_is_in_directory(path: &Path, directory: &Path, recursive: bool) -> bool {
+    if recursive {
+        return path.starts_with(directory);
+    }
+
+    path.parent().is_some_and(|parent| parent == directory)
 }
 
 pub fn reconcile_jobs(config: &AppConfig) -> BTreeSet<IndexJob> {
@@ -405,8 +460,15 @@ pub fn reconcile_jobs(config: &AppConfig) -> BTreeSet<IndexJob> {
 }
 
 pub fn discover_files(config: &AppConfig) -> Vec<DiscoveredFile> {
+    discover_files_limited(config, MAX_DISCOVERED_FILES)
+}
+
+pub fn discover_files_limited(config: &AppConfig, limit: usize) -> Vec<DiscoveredFile> {
     let mut files = BTreeMap::<String, DiscoveredFile>::new();
     for file in &config.files {
+        if files.len() >= limit {
+            return files.into_values().collect();
+        }
         files.insert(
             file.id.clone(),
             DiscoveredFile {
@@ -426,6 +488,9 @@ pub fn discover_files(config: &AppConfig) -> Vec<DiscoveredFile> {
                 .filter_map(Result::ok)
                 .filter(|entry| entry.file_type().is_file())
             {
+                if files.len() >= limit {
+                    return files.into_values().collect();
+                }
                 let path = entry.path();
                 if compressed_kind(path)
                     .is_some_and(|_| is_rotation_candidate_for(path, &file.path))
@@ -459,6 +524,9 @@ pub fn discover_files(config: &AppConfig) -> Vec<DiscoveredFile> {
             .filter_map(Result::ok)
             .filter(|entry| entry.file_type().is_file())
         {
+            if files.len() >= limit {
+                return files.into_values().collect();
+            }
             let path = entry.path();
             if !directory_file_matches(directory, path) {
                 continue;
@@ -604,6 +672,23 @@ mod tests {
     }
 
     #[test]
+    fn maps_directory_file_event_without_discovering_entire_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let hot_path = dir.path().join("app.log");
+        let ignored_path = dir.path().join("notes.txt");
+        let cfg = directory_config(dir.path().to_path_buf());
+
+        assert_eq!(
+            jobs_for_path(&cfg, &hot_path),
+            vec![IndexJob::Hot {
+                source_id: "release:app.log".to_string(),
+                path: hot_path,
+            }]
+        );
+        assert!(jobs_for_path(&cfg, &ignored_path).is_empty());
+    }
+
+    #[test]
     fn configured_file_still_discovers_matching_gzip_rotations() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("app.log");
@@ -736,6 +821,19 @@ mod tests {
     }
 
     #[test]
+    fn discover_files_limited_stops_after_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        for index in 0..10 {
+            std::fs::write(dir.path().join(format!("app-{index}.log")), "line\n").unwrap();
+        }
+        let cfg = directory_config(dir.path().to_path_buf());
+
+        let discovered = discover_files_limited(&cfg, 3);
+
+        assert_eq!(discovered.len(), 3);
+    }
+
+    #[test]
     fn ready_unwatched_directories_become_watch_candidates_after_recreate() {
         let dir = tempfile::tempdir().unwrap();
         let recreated = dir.path().join("release");
@@ -761,5 +859,29 @@ mod tests {
         };
 
         assert_eq!(job.source_id(), "app");
+    }
+
+    #[test]
+    fn dispatch_selection_respects_global_concurrency_limit() {
+        let queued = BTreeSet::from([
+            IndexJob::Hot {
+                source_id: "app".to_string(),
+                path: PathBuf::from("/var/log/app.log"),
+            },
+            IndexJob::Hot {
+                source_id: "worker".to_string(),
+                path: PathBuf::from("/var/log/worker.log"),
+            },
+            IndexJob::Hot {
+                source_id: "api".to_string(),
+                path: PathBuf::from("/var/log/api.log"),
+            },
+        ]);
+        let running_sources = HashSet::from(["app".to_string()]);
+
+        let ready = select_ready_jobs(&queued, &running_sources, 2);
+
+        assert_eq!(ready.len(), 1);
+        assert!(!ready.iter().any(|job| job.source_id() == "app"));
     }
 }

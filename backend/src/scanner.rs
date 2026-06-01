@@ -27,6 +27,19 @@ pub fn scan_lines_from<F>(
     path: &Path,
     start_offset: u64,
     start_line_no: u64,
+    on_line: F,
+) -> anyhow::Result<(u64, u64)>
+where
+    F: FnMut(LogLine) -> anyhow::Result<()>,
+{
+    scan_lines_range(path, start_offset, None, start_line_no, on_line)
+}
+
+pub fn scan_lines_range<F>(
+    path: &Path,
+    start_offset: u64,
+    end_offset: Option<u64>,
+    start_line_no: u64,
     mut on_line: F,
 ) -> anyhow::Result<(u64, u64)>
 where
@@ -40,6 +53,9 @@ where
 
     loop {
         let start = offset;
+        if end_offset.is_some_and(|end| start >= end) {
+            break;
+        }
         let mut buf = String::new();
         let bytes = reader.read_line(&mut buf)?;
         if bytes == 0 {

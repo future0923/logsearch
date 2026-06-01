@@ -2,7 +2,10 @@ use crate::{
     config::AppConfig,
     index::{IndexStatus, LogSearchIndex},
     search::{AroundRequest, AroundResponse, SearchRequest, SearchResponse},
-    watcher::{DiscoveredFileSource, discover_files, watched_directories},
+    watcher::{
+        DiscoveredFileKind, DiscoveredFileSource, MAX_DISCOVERED_FILES, discover_files,
+        watched_directories,
+    },
 };
 use axum::{
     Json, Router,
@@ -33,6 +36,7 @@ struct StatusResponse {
     file_sources: Vec<FileSourceResponse>,
     configured_directories: Vec<DirectorySourceResponse>,
     discovered_files: Vec<DiscoveredFileResponse>,
+    discovered_files_truncated: bool,
     index_dir: String,
     watched_directories: Vec<String>,
     indexing: Vec<IndexStatus>,
@@ -99,6 +103,7 @@ async fn around(
 async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
     let indexing = state.index.status_snapshot();
     let discovered_files = discover_files(&state.config);
+    let discovered_files_truncated = discovered_files.len() >= MAX_DISCOVERED_FILES;
     Json(StatusResponse {
         files: state.config.files.len(),
         directories: state.config.directories.len(),
@@ -118,6 +123,7 @@ async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
             .iter()
             .map(discovered_file_response)
             .collect(),
+        discovered_files_truncated,
         index_dir: state.config.index.dir.to_string_lossy().to_string(),
         watched_directories: watched_directories(&state.config)
             .into_iter()
@@ -160,6 +166,7 @@ async fn search(
 ) -> Result<Json<SearchResponse>, ApiError> {
     req.validate().map_err(ApiError::bad_request)?;
     let started = Instant::now();
+    refresh_index_metadata(&state)?;
     let (hits, elapsed_ms, truncated, has_next, next_cursor) = state.index.search(&req)?;
 
     Ok(Json(SearchResponse {
@@ -170,6 +177,25 @@ async fn search(
         next_cursor,
         elapsed_ms: elapsed_ms.max(started.elapsed().as_millis()),
     }))
+}
+
+fn refresh_index_metadata(state: &AppState) -> anyhow::Result<()> {
+    for file in discover_files(&state.config).into_iter().filter(|file| file.exists) {
+        match file.kind {
+            DiscoveredFileKind::Hot => {
+                state.index.sync_file_metadata(&file.id, &file.path)?;
+            }
+            DiscoveredFileKind::Gzip
+            | DiscoveredFileKind::Zstd
+            | DiscoveredFileKind::Bzip2
+            | DiscoveredFileKind::Xz => {
+                state
+                    .index
+                    .sync_compressed_file_metadata(&file.id, &file.path, file.kind.as_str())?;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub struct ApiError {
