@@ -1,14 +1,15 @@
 import { mkdir, rm, cp, chmod, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
-const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+export const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const appName = 'log-search'
 const version = (process.env.VERSION || '0.1.0').replace(/^v/, '')
 const platform = process.env.RELEASE_PLATFORM || process.platform
 const arch = process.env.RELEASE_ARCH || normalizedArch(process.arch)
 const packageSuffix = process.env.RELEASE_PACKAGE_SUFFIX || `${platform}-${arch}`
+const cargoTarget = process.env.CARGO_BUILD_TARGET || ''
 const distDir = join(rootDir, 'dist')
 const releaseName = `${appName}_${version}_${packageSuffix}`
 const releaseDir = join(distDir, releaseName)
@@ -31,6 +32,20 @@ function run(command, args, options = {}) {
   }
 }
 
+export function cargoBuildArgs(target = cargoTarget) {
+  const args = ['build', '--release']
+  if (target) {
+    args.push('--target', target)
+  }
+  return args
+}
+
+export function cargoReleaseDir(target = cargoTarget) {
+  return target
+    ? join(rootDir, 'backend', 'target', target, 'release')
+    : join(rootDir, 'backend', 'target', 'release')
+}
+
 async function copyIfExists(source, target) {
   try {
     await cp(source, target, { recursive: true })
@@ -46,11 +61,11 @@ async function build() {
 
   run('npm', ['ci'], { cwd: join(rootDir, 'frontend') })
   run('npm', ['run', 'build'], { cwd: join(rootDir, 'frontend') })
-  run('cargo', ['build', '--release'], { cwd: join(rootDir, 'backend') })
+  run('cargo', cargoBuildArgs(), { cwd: join(rootDir, 'backend') })
 
   const binaryName = platform === 'windows' ? `${appName}.exe` : appName
   const builtBinaryName = platform === 'windows' ? 'backend.exe' : 'backend'
-  await cp(join(rootDir, 'backend', 'target', 'release', builtBinaryName), join(releaseDir, binaryName))
+  await cp(join(cargoReleaseDir(), builtBinaryName), join(releaseDir, binaryName))
   await cp(join(rootDir, 'frontend', 'dist'), join(releaseDir, 'frontend'), { recursive: true })
   await cp(join(rootDir, 'config.example.toml'), join(releaseDir, 'config.toml'))
   await cp(join(rootDir, 'packaging', 'README.txt'), join(releaseDir, 'README.txt'))
@@ -116,7 +131,9 @@ async function createTarGzArchive() {
   return archivePath
 }
 
-build().catch((error) => {
-  console.error(error)
-  process.exit(1)
-})
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  build().catch((error) => {
+    console.error(error)
+    process.exit(1)
+  })
+}

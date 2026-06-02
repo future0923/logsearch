@@ -31,10 +31,12 @@ jobs:
           - package: linux_amd64
             platform: linux
             os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-musl
             asset: dist/*.tar.gz
           - package: linux_arm64
             platform: linux
             os: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-musl
             asset: dist/*.tar.gz
 
     runs-on: ${{ matrix.os }}
@@ -53,12 +55,21 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Rust target
+        if: matrix.platform == 'linux'
+        run: rustup target add ${{ matrix.rust_target }}
+
+      - name: Install Linux musl toolchain
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
       - name: Build package
         run: node scripts/package-release.mjs
         env:
           VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.1.0' }}
           RELEASE_PLATFORM: ${{ matrix.platform }}
           RELEASE_PACKAGE_SUFFIX: ${{ matrix.package }}
+          CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2

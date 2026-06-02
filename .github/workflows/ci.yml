@@ -42,6 +42,9 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+      - name: Test release packaging script
+        run: node --test scripts/package-release.test.mjs
+
       - name: Test backend
         working-directory: backend
         run: cargo test
