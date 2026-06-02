@@ -1,4 +1,6 @@
 .shell {
+  display: flex;
+  flex-direction: column;
   min-height: 100vh;
   background: #edf1f6;
 }
@@ -38,8 +40,16 @@
 }
 
 .workspace {
+  flex: 1;
   min-width: 0;
   padding: 16px;
+}
+
+.appFooter {
+  padding: 0 16px 16px;
+  color: #7b8798;
+  font-size: 12px;
+  text-align: center;
 }
 
 .topBar {
@@ -187,6 +197,155 @@
   width: 180px;
 }
 
+.filePickerField {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  color: #344257;
+  font-size: 14px;
+}
+
+.filePickerLabel {
+  flex: 0 0 auto;
+}
+
+.filePickerTrigger {
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 8px;
+  width: min(380px, calc(100vw - 32px));
+  height: 34px;
+  padding: 0 9px 0 11px;
+  border: 1px solid #c9d6e7;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #1d2a3d;
+  text-align: left;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.filePickerTrigger:hover,
+.filePickerTrigger.open {
+  border-color: #8fb1e8;
+  box-shadow: 0 0 0 3px rgba(34, 82, 199, 0.12);
+}
+
+.filePickerTriggerText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filePickerChevron {
+  color: #53657c;
+  font-size: 13px;
+  text-align: center;
+}
+
+.filePickerMenu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 12;
+  display: grid;
+  gap: 8px;
+  width: min(520px, calc(100vw - 32px));
+  padding: 10px;
+  border: 1px solid #c9d6e7;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 22px 60px rgba(15, 23, 42, 0.18);
+}
+
+.filePickerSearch {
+  width: 100%;
+  height: 36px;
+  padding: 0 11px;
+  border: 1px solid #c9d6e7;
+  border-radius: 7px;
+  outline: 0;
+  background: #f8fafc;
+  color: #1d2a3d;
+}
+
+.filePickerSearch:focus {
+  border-color: #2252c7;
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(34, 82, 199, 0.12);
+}
+
+.filePickerList {
+  display: grid;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.filePickerOption {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #263348;
+  text-align: left;
+}
+
+.filePickerOption:hover,
+.filePickerOption:focus-visible {
+  outline: 0;
+  background: #edf5ff;
+}
+
+.filePickerOption.selected {
+  background: #e7f0ff;
+  box-shadow: inset 3px 0 0 #2252c7;
+}
+
+.filePickerOptionMain {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.filePickerOptionMain strong {
+  color: #18212f;
+}
+
+.filePickerOptionMain span:not(.kindPill) {
+  min-width: 0;
+  overflow: hidden;
+  color: #526176;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filePickerOptionMeta {
+  min-width: 0;
+  overflow: hidden;
+  color: #708096;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filePickerEmpty {
+  padding: 14px 10px;
+  color: #708096;
+  font-size: 13px;
+}
+
 .statusLine {
   display: flex;
   gap: 8px;
@@ -230,11 +389,31 @@
 
 .watchedSummary {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
   padding: 10px 12px;
   border-bottom: 1px solid #e4eaf2;
   color: #526176;
   font-size: 13px;
+}
+
+.tailLineSelect {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  color: #526176;
+}
+
+.tailLineSelect select {
+  height: 28px;
+  min-width: 72px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1d2a3d;
+  font: inherit;
 }
 
 .watchedTable {
@@ -245,7 +424,7 @@
 
 .watchedRow {
   display: grid;
-  grid-template-columns: 56px minmax(120px, 0.75fr) 96px minmax(180px, 1.5fr) 72px;
+  grid-template-columns: 72px 56px minmax(120px, 0.75fr) 96px minmax(180px, 1.5fr) 64px;
   gap: 10px;
   align-items: center;
   min-height: 36px;
@@ -289,6 +468,22 @@
 
 .stateMissing {
   color: #b42318;
+}
+
+.tailButton {
+  height: 28px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1d2a3d;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.tailButton:disabled {
+  cursor: not-allowed;
+  color: #8492a6;
+  background: #edf1f6;
 }
 
 .watchedEmpty {
@@ -680,6 +875,145 @@ mark {
   background: #18220f;
 }
 
+.tailOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  padding: 16px;
+  background: rgba(15, 23, 42, 0.68);
+}
+
+.tailPanel {
+  place-self: center;
+  display: flex;
+  flex-direction: column;
+  width: min(1680px, 100%);
+  height: min(960px, 100%);
+  overflow: hidden;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  box-shadow: 0 24px 80px rgba(2, 6, 23, 0.34);
+}
+
+.tailHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #ecf0f5;
+  background: #f8fafc;
+}
+
+.tailHeader div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.tailHeader strong {
+  color: #18212f;
+  font-size: 13px;
+}
+
+.tailHeader span {
+  min-width: 0;
+  overflow: hidden;
+  color: #53657c;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tailActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.tailToggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 8px;
+  color: #526176;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.tailToggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.tailToggleTrack {
+  position: relative;
+  width: 30px;
+  height: 16px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #cbd5e1;
+  transition: background 0.16s ease;
+}
+
+.tailToggleThumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.24);
+  transition: transform 0.16s ease;
+}
+
+.tailToggle input:checked + .tailToggleTrack {
+  background: #1d4ed8;
+}
+
+.tailToggle input:checked + .tailToggleTrack .tailToggleThumb {
+  transform: translateX(14px);
+}
+
+.tailToggle:has(input:focus-visible) {
+  outline: 2px solid #84a9ff;
+  outline-offset: 2px;
+}
+
+.tailActions button {
+  height: 30px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1d2a3d;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.tailError {
+  padding: 8px 14px;
+  border-bottom: 1px solid #f0b4b4;
+  background: #fff0f0;
+  color: #9d1c1c;
+  font-size: 12px;
+}
+
+.tailViewport {
+  min-height: 0;
+}
+
 .emptyState {
   display: grid;
   gap: 6px;
@@ -709,7 +1043,15 @@ mark {
     padding: 14px;
   }
 
+  .tailOverlay {
+    padding: 14px;
+  }
+
   .previewExpanded {
+    height: 100%;
+  }
+
+  .tailPanel {
     height: 100%;
   }
 }
@@ -734,5 +1076,18 @@ mark {
 
   .resultNav button {
     width: 100%;
+  }
+
+  .tailOverlay {
+    padding: 10px;
+  }
+
+  .tailHeader {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .tailActions {
+    justify-content: space-between;
   }
 }

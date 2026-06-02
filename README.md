@@ -2,14 +2,27 @@
 
 LogSearch是一个低内存、高性能、渐进式检索工具。
 
-它适合这些场景：
+## 为什么选择 LogSearch？
+
+- 内存占用极低
+- 毫秒级检索响应
+- 功能强大
+
+实测 `6M` 内存即可检索超大日志文件并做到毫秒级响应
+
+![内存](docs/images/memory.png)
+
+![响应](docs/images/response.png)
+
+## 它适合这些场景：
 
 - 在多份应用日志里快速找关键字。
 - 搜索错误、链路 ID、订单号、用户 ID、类名、接口名。
 - 用 `AND` / `OR` 组合条件缩小范围。
 - 点开命中行，直接查看前后上下文。
 - 日志持续写入时，索引自动更新。
-- 支持多种压缩格式（gz、zst、bz2、xz等）
+- 支持多种压缩格式（gz、zst、bz2、xz等）搜索
+- 支持 tail -f 实时查看日志
 
 ## 界面预览
 
@@ -27,30 +40,20 @@ LogSearch是一个低内存、高性能、渐进式检索工具。
 
 ![放大预览](docs/images/expanded-preview.png)
 
-## 用户怎么用
+tail -f 方式查看
 
-发布包解压后目录大概是这样：
+![实时](docs/images/tail.png)
 
-```text
-log-search
-start.sh
-stop.sh
-status.sh
-config.toml
-frontend/
-data/
-README.txt
-log-search.service
-```
+## 快速开始
 
-使用步骤：
+下载最新版本
 
 ```bash
 vim config.toml
 ./start.sh
 ```
 
-`start.sh` 会后台启动服务，不会一直占住终端。然后打开：
+然后打开：
 
 ```text
 http://127.0.0.1:12457
@@ -185,61 +188,6 @@ error AND (timeout OR exception)
 - 日志文件清空或截断：自动从头重建该文件索引。
 - 日志文件删除后重新创建：自动识别并重建索引。
 - gzip 轮转文件也会被索引，例如 `app.log.1.gz`。
-
-## 常用命令
-
-后台启动：
-
-```bash
-./start.sh
-```
-
-查看状态：
-
-```bash
-./status.sh
-```
-
-停止：
-
-```bash
-./stop.sh
-```
-
-查看运行日志：
-
-```bash
-tail -f logs/log-search.log
-```
-
-重建索引：
-
-```bash
-./log-search --config config.toml rebuild-index
-```
-
-清空索引：
-
-```bash
-./log-search --config config.toml clear-index
-```
-
-直接指定前端目录运行：
-
-```bash
-./log-search --config config.toml --static-dir frontend
-```
-
-## 安装为系统服务
-
-发布包里带了 `log-search.service` 示例：
-
-```bash
-sudo cp -r . /opt/log-search
-sudo cp log-search.service /etc/systemd/system/log-search.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now log-search
-```
 
 ## 开源协议
 

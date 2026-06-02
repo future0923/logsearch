@@ -5,4 +5,5 @@ pub mod scanner;
 pub mod search;
 pub mod server;
 pub mod state;
+pub mod tail;
 pub mod watcher;

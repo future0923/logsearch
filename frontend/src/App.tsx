@@ -64,6 +64,19 @@ type AroundResponse = {
   hasAfter: boolean
 }
 
+type TailLine = {
+  lineNo: number
+  offset: number
+  content: string
+}
+
+type TailEventPayload = {
+  path: string
+  offset: number
+  nextLineNo: number
+  lines: TailLine[]
+}
+
 type PreviewMode = 'search' | 'around'
 type LoadDirection = 'before' | 'after' | 'both'
 
@@ -73,6 +86,8 @@ const EXPAND_OPTIONS = [20, 50, 100, 200]
 const INITIAL_EXPAND_LINES = 50
 const SEARCH_PAGE_SIZE = 20
 const COLLAPSIBLE_RESULT_LENGTH = 180
+const TAIL_LINE_OPTIONS = [10, 50, 100, 200, 500, 1000]
+const MAX_TAIL_LINES = 2000
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -160,6 +175,40 @@ function resultKey(hit: SearchHit) {
   return `${hit.fileId}-${hit.offset}`
 }
 
+function shortPath(path: string) {
+  return path.split(/[\\/]/).pop() || path
+}
+
+function isCompressedKind(kind: string) {
+  return kind === 'gzip' || kind === 'zstd' || kind === 'bzip2' || kind === 'xz'
+}
+
+function fileSearchText(file: FileSource) {
+  return [
+    file.id,
+    file.kind,
+    file.path,
+    file.source,
+    file.directoryId ?? '',
+    file.exists ? 'ready' : 'missing',
+    shortPath(file.path),
+  ].join(' ').toLowerCase()
+}
+
+function filterFileSources(files: FileSource[], search: string) {
+  const terms = search
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+
+  if (!terms.length) return files
+  return files.filter((file) => {
+    const haystack = fileSearchText(file)
+    return terms.every((term) => haystack.includes(term))
+  })
+}
+
 function App() {
   const [query, setQuery] = useState('')
   const [regex, setRegex] = useState(false)
@@ -184,9 +233,25 @@ function App() {
   const [discoveredFilesTruncated, setDiscoveredFilesTruncated] = useState(false)
   const [showWatchedFiles, setShowWatchedFiles] = useState(false)
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([])
+  const [filePickerOpen, setFilePickerOpen] = useState(false)
+  const [filePickerSearch, setFilePickerSearch] = useState('')
   const [expandedResultKeys, setExpandedResultKeys] = useState<Set<string>>(() => new Set())
+  const [tailFile, setTailFile] = useState<FileSource | null>(null)
+  const [tailInitialLines, setTailInitialLines] = useState(10)
+  const [tailLines, setTailLines] = useState<TailLine[]>([])
+  const [tailOffset, setTailOffset] = useState<number | null>(null)
+  const [tailPaused, setTailPaused] = useState(false)
+  const [tailAutoScroll, setTailAutoScroll] = useState(true)
+  const [tailError, setTailError] = useState<string | null>(null)
   const previewRef = useRef<HTMLDivElement | null>(null)
   const resultsRef = useRef<HTMLElement | null>(null)
+  const filePickerRef = useRef<HTMLDivElement | null>(null)
+  const filePickerInputRef = useRef<HTMLInputElement | null>(null)
+  const tailViewportRef = useRef<HTMLDivElement | null>(null)
+  const tailEventSourceRef = useRef<EventSource | null>(null)
+  const tailOffsetRef = useRef<number | null>(null)
+  const tailNextLineNoRef = useRef<number | null>(null)
+  const activeTailInitialLinesRef = useRef(10)
 
   useEffect(() => {
     let alive = true
@@ -217,6 +282,70 @@ function App() {
     }
   }, [])
 
+  useEffect(() => {
+    tailEventSourceRef.current?.close()
+    tailEventSourceRef.current = null
+
+    if (!tailFile || tailPaused) return
+
+    const params = new URLSearchParams({
+      fileId: tailFile.id,
+      lines: String(activeTailInitialLinesRef.current),
+    })
+    if (tailOffsetRef.current !== null && tailNextLineNoRef.current !== null) {
+      params.set('offset', String(tailOffsetRef.current))
+      params.set('nextLineNo', String(tailNextLineNoRef.current))
+    }
+
+    const source = new EventSource(`${API_BASE}/api/tail?${params.toString()}`)
+    tailEventSourceRef.current = source
+
+    source.addEventListener('tail', (event) => {
+      const payload = JSON.parse((event as MessageEvent).data) as TailEventPayload
+      tailOffsetRef.current = payload.offset
+      tailNextLineNoRef.current = payload.nextLineNo
+      setTailOffset(payload.offset)
+      if (payload.lines.length) {
+        setTailLines((current) => [...current, ...payload.lines].slice(-MAX_TAIL_LINES))
+      }
+    })
+
+    source.addEventListener('error', () => {
+      setTailError('Tail connection interrupted')
+    })
+
+    return () => {
+      source.close()
+      if (tailEventSourceRef.current === source) {
+        tailEventSourceRef.current = null
+      }
+    }
+  }, [tailFile, tailPaused])
+
+  useEffect(() => {
+    const viewport = tailViewportRef.current
+    if (!viewport || tailPaused || !tailAutoScroll) return
+    viewport.scrollTop = viewport.scrollHeight
+  }, [tailAutoScroll, tailLines, tailPaused])
+
+  useEffect(() => {
+    if (!filePickerOpen) return
+    filePickerInputRef.current?.focus()
+  }, [filePickerOpen])
+
+  useEffect(() => {
+    if (!filePickerOpen) return
+
+    function closeOnOutsideClick(event: MouseEvent) {
+      if (!filePickerRef.current?.contains(event.target as Node)) {
+        setFilePickerOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', closeOnOutsideClick)
+    return () => document.removeEventListener('mousedown', closeOnOutsideClick)
+  }, [filePickerOpen])
+
   const selectedHit = selected === null ? null : results?.hits[selected]
   const highlightRegex = useMemo(
     () => buildHighlightRegex(query, regex, caseInsensitive, wholeWord),
@@ -235,16 +364,48 @@ function App() {
     return `${results.total} loaded in ${results.elapsedMs} ms`
   }, [error, loading, results])
 
-function shortPath(path: string) {
-  return path.split(/[\\/]/).pop() || path
-}
-
-function isCompressedKind(kind: string) {
-  return kind === 'gzip' || kind === 'zstd' || kind === 'bzip2' || kind === 'xz'
-}
+  const selectedFileId = selectedFileIds[0] ?? 'all'
+  const selectedFile = fileSources.find((file) => file.id === selectedFileId) ?? null
+  const filteredFileSources = useMemo(
+    () => filterFileSources(fileSources, filePickerSearch),
+    [filePickerSearch, fileSources],
+  )
 
 function selectFileScope(fileId: string) {
     setSelectedFileIds(fileId === 'all' ? [] : [fileId])
+    setFilePickerOpen(false)
+  }
+
+  function startTail(file: FileSource) {
+    activeTailInitialLinesRef.current = tailInitialLines
+    setTailFile(file)
+    setTailLines([])
+    setTailOffset(null)
+    tailOffsetRef.current = null
+    tailNextLineNoRef.current = null
+    setTailPaused(false)
+    setTailAutoScroll(true)
+    setTailError(null)
+  }
+
+  function toggleTailPaused() {
+    setTailPaused((value) => {
+      if (value) setTailError(null)
+      return !value
+    })
+  }
+
+  function closeTail() {
+    tailEventSourceRef.current?.close()
+    tailEventSourceRef.current = null
+    setTailFile(null)
+    setTailLines([])
+    setTailOffset(null)
+    tailOffsetRef.current = null
+    tailNextLineNoRef.current = null
+    setTailPaused(false)
+    setTailAutoScroll(true)
+    setTailError(null)
   }
 
   async function fetchSearchPage(cursor: string | null) {
@@ -628,20 +789,73 @@ function selectFileScope(fileId: string) {
             </select>
           </label>
           {fileSources.length ? (
-            <label className="selectControl fileSelect">
-              File
-              <select
-                value={selectedFileIds[0] ?? 'all'}
-                onChange={(event) => selectFileScope(event.target.value)}
+            <div className="filePickerField" ref={filePickerRef}>
+              <span className="filePickerLabel">File</span>
+              <button
+                type="button"
+                className={`filePickerTrigger ${filePickerOpen ? 'open' : ''}`}
+                aria-haspopup="listbox"
+                aria-expanded={filePickerOpen}
+                onClick={() => {
+                  setFilePickerOpen((open) => !open)
+                  setFilePickerSearch('')
+                }}
               >
-                <option value="all">All files</option>
-                {fileSources.map((file) => (
-                  <option key={file.id} value={file.id}>
-                    {file.id} · {file.kind} · {shortPath(file.path)}
-                  </option>
-                ))}
-              </select>
-            </label>
+                <span className="filePickerTriggerText">
+                  {selectedFile ? `${selectedFile.id} · ${selectedFile.kind} · ${shortPath(selectedFile.path)}` : 'All files'}
+                </span>
+                <span className="filePickerChevron" aria-hidden="true">⌄</span>
+              </button>
+              {filePickerOpen ? (
+                <div className="filePickerMenu">
+                  <input
+                    ref={filePickerInputRef}
+                    className="filePickerSearch"
+                    value={filePickerSearch}
+                    onChange={(event) => setFilePickerSearch(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') {
+                        setFilePickerOpen(false)
+                      }
+                    }}
+                    placeholder="Search file id, path, kind..."
+                  />
+                  <div className="filePickerList" role="listbox" aria-label="Log files">
+                    <button
+                      type="button"
+                      className={`filePickerOption ${selectedFileId === 'all' ? 'selected' : ''}`}
+                      role="option"
+                      aria-selected={selectedFileId === 'all'}
+                      onClick={() => selectFileScope('all')}
+                    >
+                      <span className="filePickerOptionMain">All files</span>
+                      <span className="filePickerOptionMeta">{fileSources.length} sources</span>
+                    </button>
+                    {filteredFileSources.length ? filteredFileSources.map((file) => (
+                      <button
+                        type="button"
+                        className={`filePickerOption ${selectedFileId === file.id ? 'selected' : ''}`}
+                        role="option"
+                        aria-selected={selectedFileId === file.id}
+                        key={file.id}
+                        onClick={() => selectFileScope(file.id)}
+                      >
+                        <span className="filePickerOptionMain">
+                          <span className={`kindPill ${isCompressedKind(file.kind) ? 'compressed' : 'hot'}`}>{file.kind}</span>
+                          <strong>{file.id}</strong>
+                          <span>{shortPath(file.path)}</span>
+                        </span>
+                        <span className="filePickerOptionMeta" title={file.path}>
+                          {file.source === 'directory' ? file.directoryId : 'file'} · {file.exists ? 'ready' : 'missing'} · {file.path}
+                        </span>
+                      </button>
+                    )) : (
+                      <div className="filePickerEmpty">No files match "{filePickerSearch}"</div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+            </div>
           ) : null}
         </div>
 
@@ -666,15 +880,36 @@ function selectFileScope(fileId: string) {
               <span>{fileSources.filter((file) => file.kind === 'hot').length} hot</span>
               <span>{fileSources.filter((file) => isCompressedKind(file.kind)).length} compressed</span>
               <span>{configuredDirectories.filter((directory) => directory.exists).length} active dirs</span>
+              <label className="tailLineSelect">
+                Initial lines
+                <select
+                  value={tailInitialLines}
+                  onChange={(event) => setTailInitialLines(Number(event.target.value))}
+                >
+                  {TAIL_LINE_OPTIONS.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
             <div className="watchedTable">
               {fileSources.length ? fileSources.map((file) => (
                 <div className="watchedRow" key={file.id}>
+                  <span className={file.exists ? 'stateOk' : 'stateMissing'}>{file.exists ? 'ready' : 'missing'}</span>
                   <span className={`kindPill ${isCompressedKind(file.kind) ? 'compressed' : 'hot'}`}>{file.kind}</span>
                   <span className="watchedName">{file.id}</span>
                   <span className="watchedSource">{file.source === 'directory' ? file.directoryId : 'file'}</span>
                   <span className="watchedPath" title={file.path}>{file.path}</span>
-                  <span className={file.exists ? 'stateOk' : 'stateMissing'}>{file.exists ? 'ready' : 'missing'}</span>
+                  <button
+                    className="tailButton"
+                    type="button"
+                    onClick={() => startTail(file)}
+                    disabled={!file.exists || file.kind !== 'hot'}
+                  >
+                    Tail
+                  </button>
                 </div>
               )) : (
                 <div className="watchedEmpty">No watched files</div>
@@ -757,9 +992,53 @@ function selectFileScope(fileId: string) {
           </div>
         ) : null}
       </section>
+      <footer className="appFooter">
+        Copyright (c) 2026 future0923
+      </footer>
       {expandedPreview ? (
         <div className="previewOverlay" role="dialog" aria-modal="true">
           <section className="preview previewExpanded">{renderPreview(true)}</section>
+        </div>
+      ) : null}
+      {tailFile ? (
+        <div className="tailOverlay" role="dialog" aria-modal="true" aria-label="Live tail">
+          <section className="tailPanel">
+            <div className="tailHeader">
+              <div>
+                <strong>{tailFile.id}</strong>
+                <span title={tailFile.path}>{tailFile.path}</span>
+              </div>
+              <div className="tailActions">
+                {tailOffset !== null ? <span>{tailLines.length} lines</span> : <span>Connecting</span>}
+                <label className="tailToggle">
+                  <input
+                    type="checkbox"
+                    checked={tailAutoScroll}
+                    onChange={(event) => setTailAutoScroll(event.target.checked)}
+                  />
+                  <span className="tailToggleTrack" aria-hidden="true">
+                    <span className="tailToggleThumb" />
+                  </span>
+                  Auto scroll
+                </label>
+                <button type="button" onClick={toggleTailPaused}>
+                  {tailPaused ? 'Resume' : 'Pause'}
+                </button>
+                <button type="button" onClick={closeTail}>
+                  Close
+                </button>
+              </div>
+            </div>
+            {tailError ? <div className="tailError">{tailError}</div> : null}
+            <div className="logViewport tailViewport" ref={tailViewportRef}>
+              {tailLines.map((line) => (
+                <div className="logLine" key={`${line.lineNo}-${line.offset}`}>
+                  <span className="lineNumber">{line.lineNo}</span>
+                  <code>{line.content}</code>
+                </div>
+              ))}
+            </div>
+          </section>
         </div>
       ) : null}
     </main>

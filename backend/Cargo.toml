@@ -18,6 +18,7 @@ sha2 = "0.11.0"
 tempfile = "3.27.0"
 thiserror = "2.0.17"
 tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "signal"] }
+tokio-stream = { version = "0.1.17", features = ["sync"] }
 toml = "0.9.12"
 tower-http = { version = "0.6.11", features = ["cors", "fs", "trace"] }
 tracing = "0.1.43"
