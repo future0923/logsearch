@@ -69,7 +69,7 @@ jobs:
           VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.1.0' }}
           RELEASE_PLATFORM: ${{ matrix.platform }}
           RELEASE_PACKAGE_SUFFIX: ${{ matrix.package }}
-          CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
+          RELEASE_CARGO_TARGET: ${{ matrix.rust_target }}
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
