@@ -10,6 +10,8 @@ use std::{
 };
 
 const MAX_INITIAL_LINES: usize = 1_000;
+const MAX_TAIL_BATCH_LINES: usize = 500;
+const MAX_TAIL_BATCH_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -107,6 +109,7 @@ pub fn read_new_tail_lines(
 
     let mut lines = Vec::<TailLine>::new();
     let mut line_no = next_line_no;
+    let mut batch_bytes = 0_usize;
 
     loop {
         let mut content = String::new();
@@ -117,12 +120,17 @@ pub fn read_new_tail_lines(
         }
 
         offset += bytes as u64;
+        batch_bytes += bytes;
         lines.push(TailLine {
             line_no,
             offset: start_offset,
             content: trim_line_ending(content),
         });
         line_no += 1;
+
+        if lines.len() >= MAX_TAIL_BATCH_LINES || batch_bytes >= MAX_TAIL_BATCH_BYTES {
+            break;
+        }
     }
 
     Ok(TailSnapshot {
@@ -202,5 +210,48 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn read_new_tail_lines_limits_each_batch_and_keeps_resume_offset() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("app.log");
+        let content = (1..=600)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        std::fs::write(&log_path, content).unwrap();
+
+        let first = read_new_tail_lines(&log_path, 0, 1).unwrap();
+
+        assert_eq!(first.lines.len(), 500);
+        assert_eq!(first.next_line_no, 501);
+        assert_eq!(first.lines.first().unwrap().content, "line 1");
+        assert_eq!(first.lines.last().unwrap().content, "line 500");
+
+        let second = read_new_tail_lines(&log_path, first.offset, first.next_line_no).unwrap();
+
+        assert_eq!(second.lines.len(), 100);
+        assert_eq!(second.next_line_no, 601);
+        assert_eq!(second.lines.first().unwrap().content, "line 501");
+        assert_eq!(second.lines.last().unwrap().content, "line 600");
+    }
+
+    #[test]
+    fn read_new_tail_lines_limits_each_batch_by_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("app.log");
+        let line = format!("{}\n", "x".repeat(4095));
+        let line_count = (MAX_TAIL_BATCH_BYTES / line.len()) + 20;
+        std::fs::write(&log_path, line.repeat(line_count)).unwrap();
+
+        let first = read_new_tail_lines(&log_path, 0, 1).unwrap();
+
+        assert!(first.lines.len() < line_count);
+        assert!(first.lines.iter().map(|line| line.content.len()).sum::<usize>() <= MAX_TAIL_BATCH_BYTES);
+
+        let second = read_new_tail_lines(&log_path, first.offset, first.next_line_no).unwrap();
+
+        assert!(!second.lines.is_empty());
+        assert_eq!(second.lines.first().unwrap().line_no, first.next_line_no);
     }
 }

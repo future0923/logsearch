@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent, ReactNode } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import './App.css'
 
 type ContextLine = {
@@ -252,6 +253,14 @@ function App() {
   const tailOffsetRef = useRef<number | null>(null)
   const tailNextLineNoRef = useRef<number | null>(null)
   const activeTailInitialLinesRef = useRef(10)
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual manages its own scroll measurement state.
+  const tailVirtualizer = useVirtualizer({
+    count: tailLines.length,
+    getScrollElement: () => tailViewportRef.current,
+    estimateSize: () => 22,
+    overscan: 12,
+  })
+  const tailVirtualRows = tailVirtualizer.getVirtualItems()
 
   useEffect(() => {
     let alive = true
@@ -323,10 +332,9 @@ function App() {
   }, [tailFile, tailPaused])
 
   useEffect(() => {
-    const viewport = tailViewportRef.current
-    if (!viewport || tailPaused || !tailAutoScroll) return
-    viewport.scrollTop = viewport.scrollHeight
-  }, [tailAutoScroll, tailLines, tailPaused])
+    if (!tailLines.length || tailPaused || !tailAutoScroll) return
+    tailVirtualizer.scrollToIndex(tailLines.length - 1, { align: 'end' })
+  }, [tailAutoScroll, tailLines.length, tailPaused, tailVirtualizer])
 
   useEffect(() => {
     if (!filePickerOpen) return
@@ -1031,12 +1039,26 @@ function selectFileScope(fileId: string) {
             </div>
             {tailError ? <div className="tailError">{tailError}</div> : null}
             <div className="logViewport tailViewport" ref={tailViewportRef}>
-              {tailLines.map((line) => (
-                <div className="logLine" key={`${line.lineNo}-${line.offset}`}>
-                  <span className="lineNumber">{line.lineNo}</span>
-                  <code>{line.content}</code>
+              <div
+                className="tailVirtualCanvas"
+                style={{ height: `${tailVirtualizer.getTotalSize()}px` }}
+              >
+                {tailVirtualRows.map((virtualRow) => {
+                  const line = tailLines[virtualRow.index]
+                  return (
+                    <div
+                      className="logLine tailVirtualLine"
+                      data-index={virtualRow.index}
+                      key={`${line.lineNo}-${line.offset}`}
+                      ref={tailVirtualizer.measureElement}
+                      style={{ transform: `translateY(${virtualRow.start}px)` }}
+                    >
+                      <span className="lineNumber">{line.lineNo}</span>
+                      <code>{line.content}</code>
+                    </div>
+                  )
+                })}
                 </div>
-              ))}
             </div>
           </section>
         </div>
