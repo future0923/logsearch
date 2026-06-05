@@ -1,6 +1,12 @@
 [server]
 addr = "127.0.0.1:12457"
 
+[server.auth]
+enabled = false
+username = "admin"
+password = "change-me"
+realm = "Log Search"
+
 [index]
 dir = "./data/index"
 

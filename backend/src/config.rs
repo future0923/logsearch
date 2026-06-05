@@ -20,6 +20,18 @@ pub struct AppConfig {
 pub struct ServerConfig {
     #[serde(default = "default_addr")]
     pub addr: String,
+    #[serde(default)]
+    pub auth: Option<AuthConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuthConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    pub username: String,
+    pub password: String,
+    #[serde(default = "default_auth_realm")]
+    pub realm: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -50,6 +62,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             addr: default_addr(),
+            auth: None,
         }
     }
 }
@@ -90,8 +103,25 @@ impl AppConfig {
             directory.path = absolutize(&directory.path)?;
         }
 
+        validate_auth_config(&cfg.server.auth)?;
+
         Ok(cfg)
     }
+}
+
+fn validate_auth_config(auth: &Option<AuthConfig>) -> anyhow::Result<()> {
+    let Some(auth) = auth.as_ref().filter(|auth| auth.enabled) else {
+        return Ok(());
+    };
+
+    if auth.username.is_empty() {
+        anyhow::bail!("server.auth.username must not be empty when auth is enabled");
+    }
+    if auth.password.is_empty() {
+        anyhow::bail!("server.auth.password must not be empty when auth is enabled");
+    }
+
+    Ok(())
 }
 
 fn validate_directory_path(path: &Path) -> anyhow::Result<()> {
@@ -123,6 +153,10 @@ fn default_addr() -> String {
 
 fn default_index_dir() -> PathBuf {
     PathBuf::from("./data/index")
+}
+
+fn default_auth_realm() -> String {
+    "Log Search".to_string()
 }
 
 fn default_directory_include() -> Vec<String> {
@@ -188,7 +222,72 @@ include = ["*.log"]
 
         let err = AppConfig::load(&config_path).unwrap_err();
 
-        assert!(err.to_string().contains("directories.path must be a real directory"));
+        assert!(
+            err.to_string()
+                .contains("directories.path must be a real directory")
+        );
         assert!(err.to_string().contains("put patterns in include instead"));
+    }
+
+    #[test]
+    fn server_auth_defaults_to_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(&config_path, "").unwrap();
+
+        let config = AppConfig::load(&config_path).unwrap();
+
+        assert!(config.server.auth.is_none());
+    }
+
+    #[test]
+    fn loads_server_basic_auth_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[server]
+addr = "127.0.0.1:12457"
+
+[server.auth]
+enabled = true
+username = "admin"
+password = "secret"
+realm = "Private Logs"
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(&config_path).unwrap();
+        let auth = config.server.auth.unwrap();
+
+        assert!(auth.enabled);
+        assert_eq!(auth.username, "admin");
+        assert_eq!(auth.password, "secret");
+        assert_eq!(auth.realm, "Private Logs");
+    }
+
+    #[test]
+    fn rejects_enabled_auth_without_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[server.auth]
+enabled = true
+username = ""
+password = "secret"
+"#,
+        )
+        .unwrap();
+
+        let err = AppConfig::load(&config_path).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("server.auth.username must not be empty")
+        );
     }
 }

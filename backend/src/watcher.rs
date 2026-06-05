@@ -703,6 +703,7 @@ mod tests {
         AppConfig {
             server: ServerConfig {
                 addr: "127.0.0.1:0".to_string(),
+                auth: None,
             },
             index: IndexConfig {
                 dir: PathBuf::from("/tmp/index"),
@@ -719,6 +720,7 @@ mod tests {
         AppConfig {
             server: ServerConfig {
                 addr: "127.0.0.1:0".to_string(),
+                auth: None,
             },
             index: IndexConfig {
                 dir: PathBuf::from("/tmp/index"),

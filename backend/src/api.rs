@@ -1,5 +1,5 @@
 use crate::{
-    config::AppConfig,
+    config::{AppConfig, AuthConfig},
     index::{IndexStatus, LogSearchIndex},
     search::{AroundRequest, AroundResponse, SearchRequest, SearchResponse},
     tail::{TailError, TailLine, initial_tail_snapshot, read_new_tail_lines, resolve_tail_path},
@@ -11,7 +11,8 @@ use crate::{
 use axum::{
     Json, Router,
     extract::{Query, State},
-    http::StatusCode,
+    http::{Request, StatusCode, header},
+    middleware::{self, Next},
     response::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
@@ -108,16 +109,105 @@ struct TailEvent {
 
 pub fn router(state: AppState, static_dir: PathBuf) -> Router {
     let index_html = static_dir.join("index.html");
+    let auth = state
+        .config
+        .server
+        .auth
+        .as_ref()
+        .filter(|auth| auth.enabled)
+        .cloned();
 
-    Router::new()
+    let app = Router::new()
         .route("/api/status", get(status))
         .route("/api/search", post(search))
         .route("/api/around", post(around))
         .route("/api/tail", get(tail))
         .fallback_service(ServeDir::new(&static_dir).fallback(ServeFile::new(index_html)))
         .layer(CorsLayer::permissive())
-        .layer(TraceLayer::new_for_http())
-        .with_state(state)
+        .layer(TraceLayer::new_for_http());
+
+    match auth {
+        Some(auth) => app
+            .layer(middleware::from_fn_with_state(auth, require_basic_auth))
+            .with_state(state),
+        None => app.with_state(state),
+    }
+}
+
+async fn require_basic_auth(
+    State(auth): State<AuthConfig>,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let authorized = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_basic_credentials)
+        .is_some_and(|(username, password)| username == auth.username && password == auth.password);
+
+    if authorized {
+        return next.run(req).await;
+    }
+
+    unauthorized_response(&auth.realm)
+}
+
+fn parse_basic_credentials(value: &str) -> Option<(String, String)> {
+    let encoded = value.strip_prefix("Basic ")?;
+    let decoded = decode_base64(encoded.trim())?;
+    let credentials = String::from_utf8(decoded).ok()?;
+    let (username, password) = credentials.split_once(':')?;
+    Some((username.to_string(), password.to_string()))
+}
+
+fn unauthorized_response(realm: &str) -> Response {
+    let challenge = format!("Basic realm=\"{}\"", realm.replace('"', ""));
+    (
+        StatusCode::UNAUTHORIZED,
+        [(header::WWW_AUTHENTICATE, challenge)],
+    )
+        .into_response()
+}
+
+fn decode_base64(value: &str) -> Option<Vec<u8>> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() || bytes.len() % 4 != 0 {
+        return None;
+    }
+
+    let mut output = Vec::with_capacity(bytes.len() / 4 * 3);
+    for chunk in bytes.chunks_exact(4) {
+        let mut values = [0_u8; 4];
+        let mut padding = 0;
+        for (idx, byte) in chunk.iter().enumerate() {
+            values[idx] = match *byte {
+                b'A'..=b'Z' => byte - b'A',
+                b'a'..=b'z' => byte - b'a' + 26,
+                b'0'..=b'9' => byte - b'0' + 52,
+                b'+' => 62,
+                b'/' => 63,
+                b'=' if idx >= 2 => {
+                    padding += 1;
+                    0
+                }
+                _ => return None,
+            };
+        }
+        if padding > 0 && !chunk[4 - padding..].iter().all(|byte| *byte == b'=') {
+            return None;
+        }
+
+        output.push((values[0] << 2) | (values[1] >> 4));
+        if padding < 2 {
+            output.push((values[1] << 4) | (values[2] >> 2));
+        }
+        if padding == 0 {
+            output.push((values[2] << 6) | values[3]);
+        }
+    }
+
+    Some(output)
 }
 
 async fn around(
@@ -342,9 +432,107 @@ pub(crate) fn default_tail_lines() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        config::{IndexConfig, LogFileConfig, ServerConfig},
+        index::LogSearchIndex,
+    };
+    use axum::{
+        body::Body,
+        http::{Request, header},
+    };
+    use tower::ServiceExt;
 
     #[test]
     fn tail_defaults_to_linux_tail_line_count() {
         assert_eq!(default_tail_lines(), 10);
+    }
+
+    #[tokio::test]
+    async fn router_rejects_requests_without_basic_auth_when_enabled() {
+        let (app, _dir) = test_router_with_auth("admin", "secret");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.headers().get(header::WWW_AUTHENTICATE).unwrap(),
+            "Basic realm=\"Log Search\""
+        );
+    }
+
+    #[tokio::test]
+    async fn router_accepts_requests_with_valid_basic_auth_when_enabled() {
+        let (app, _dir) = test_router_with_auth("admin", "secret");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/status")
+                    .header(header::AUTHORIZATION, "Basic YWRtaW46c2VjcmV0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn router_rejects_requests_with_invalid_basic_auth_when_enabled() {
+        let (app, _dir) = test_router_with_auth("admin", "secret");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/status")
+                    .header(header::AUTHORIZATION, "Basic YWRtaW46d3Jvbmc=")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.headers().get(header::WWW_AUTHENTICATE).unwrap(),
+            "Basic realm=\"Log Search\""
+        );
+    }
+
+    fn test_router_with_auth(username: &str, password: &str) -> (Router, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let index_dir = dir.path().join("index");
+        let static_dir = dir.path().join("static");
+        std::fs::create_dir(&static_dir).unwrap();
+        std::fs::write(static_dir.join("index.html"), "<!doctype html>").unwrap();
+        let config = Arc::new(AppConfig {
+            server: ServerConfig {
+                addr: "127.0.0.1:0".to_string(),
+                auth: Some(crate::config::AuthConfig {
+                    enabled: true,
+                    username: username.to_string(),
+                    password: password.to_string(),
+                    realm: "Log Search".to_string(),
+                }),
+            },
+            index: IndexConfig { dir: index_dir },
+            files: vec![LogFileConfig {
+                id: "app".to_string(),
+                path: dir.path().join("app.log"),
+            }],
+            directories: Vec::new(),
+        });
+        std::fs::write(&config.files[0].path, "").unwrap();
+        let index = Arc::new(LogSearchIndex::open_or_create(&config.index.dir).unwrap());
+        (router(AppState { config, index }, static_dir), dir)
     }
 }

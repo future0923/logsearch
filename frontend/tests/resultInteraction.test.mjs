@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { shouldOpenResultFromClick } from '../src/resultInteraction.ts'
+import { isOverlaySelfClick, shouldOpenResultFromClick } from '../src/resultInteraction.ts'
 
 test('opens result for a plain click with no text selection', () => {
   assert.equal(
@@ -34,4 +34,14 @@ test('ignores result click after dragging across row text', () => {
     }),
     false,
   )
+})
+
+test('treats clicks on the overlay itself as dismissible', () => {
+  const overlay = {}
+
+  assert.equal(isOverlaySelfClick({ target: overlay, currentTarget: overlay }), true)
+})
+
+test('keeps the dialog open when clicking inside the overlay panel', () => {
+  assert.equal(isOverlaySelfClick({ target: {}, currentTarget: {} }), false)
 })

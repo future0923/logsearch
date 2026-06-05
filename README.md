@@ -67,6 +67,20 @@ http://127.0.0.1:12457
 addr = "0.0.0.0:12457"
 ```
 
+## 开启访问认证
+
+如果日志服务会被其他机器访问，可以开启 HTTP Basic Auth：
+
+```toml
+[server.auth]
+enabled = true
+username = "admin"
+password = "your-password"
+realm = "Log Search"
+```
+
+开启后，访问页面和 API 都需要输入用户名密码。Basic Auth 只做 base64 编码，不负责加密；公网或不可信网络里请配合 HTTPS、VPN 或反向代理使用。
+
 ## 配置日志文件
 
 在 `config.toml` 里配置要搜索的日志：

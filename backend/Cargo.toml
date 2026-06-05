@@ -26,3 +26,6 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 walkdir = "2.5.0"
 xz2 = "0.1.7"
 zstd = "0.13.3"
+
+[dev-dependencies]
+tower = { version = "0.5.3", features = ["util"] }

@@ -29,6 +29,7 @@ mod tests {
         let config = Arc::new(AppConfig {
             server: ServerConfig {
                 addr: "127.0.0.1:0".to_string(),
+                auth: None,
             },
             index: IndexConfig {
                 dir: index_dir.clone(),

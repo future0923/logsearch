@@ -9,6 +9,11 @@ type ResultClickIntent = {
   pointerUp: PointerPoint
 }
 
+type OverlayClickIntent = {
+  target: unknown
+  currentTarget: unknown
+}
+
 const DRAG_CLICK_DISTANCE_PX = 6
 
 export function shouldOpenResultFromClick({
@@ -22,4 +27,8 @@ export function shouldOpenResultFromClick({
   const deltaX = pointerUp.x - pointerDown.x
   const deltaY = pointerUp.y - pointerDown.y
   return Math.hypot(deltaX, deltaY) <= DRAG_CLICK_DISTANCE_PX
+}
+
+export function isOverlaySelfClick({ target, currentTarget }: OverlayClickIntent) {
+  return target === currentTarget
 }
