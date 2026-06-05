@@ -21,6 +21,7 @@ tail -f app.log
 - 持续查看新增日志行。
 - `Pause`：暂停实时连接。
 - `Resume`：从上次收到的位置继续连接。
+- `Maximize` / `Restore`：在普通弹框和全屏查看之间切换。
 - `Close`：关闭 Tail 弹框并断开连接。
 
 ## 初始行数

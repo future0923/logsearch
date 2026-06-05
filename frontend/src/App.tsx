@@ -243,6 +243,7 @@ function App() {
   const [tailOffset, setTailOffset] = useState<number | null>(null)
   const [tailPaused, setTailPaused] = useState(false)
   const [tailAutoScroll, setTailAutoScroll] = useState(true)
+  const [tailMaximized, setTailMaximized] = useState(false)
   const [tailError, setTailError] = useState<string | null>(null)
   const previewRef = useRef<HTMLDivElement | null>(null)
   const resultsRef = useRef<HTMLElement | null>(null)
@@ -393,6 +394,7 @@ function selectFileScope(fileId: string) {
     tailNextLineNoRef.current = null
     setTailPaused(false)
     setTailAutoScroll(true)
+    setTailMaximized(false)
     setTailError(null)
   }
 
@@ -413,6 +415,7 @@ function selectFileScope(fileId: string) {
     tailNextLineNoRef.current = null
     setTailPaused(false)
     setTailAutoScroll(true)
+    setTailMaximized(false)
     setTailError(null)
   }
 
@@ -1009,7 +1012,12 @@ function selectFileScope(fileId: string) {
         </div>
       ) : null}
       {tailFile ? (
-        <div className="tailOverlay" role="dialog" aria-modal="true" aria-label="Live tail">
+        <div
+          className={`tailOverlay${tailMaximized ? ' tailOverlayMaximized' : ''}`}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Live tail"
+        >
           <section className="tailPanel">
             <div className="tailHeader">
               <div>
@@ -1031,6 +1039,16 @@ function selectFileScope(fileId: string) {
                 </label>
                 <button type="button" onClick={toggleTailPaused}>
                   {tailPaused ? 'Resume' : 'Pause'}
+                </button>
+                <button
+                  type="button"
+                  className={`tailIconButton${tailMaximized ? ' tailRestoreButton' : ''}`}
+                  aria-label={tailMaximized ? 'Restore tail panel' : 'Maximize tail panel'}
+                  aria-pressed={tailMaximized}
+                  title={tailMaximized ? 'Restore' : 'Maximize'}
+                  onClick={() => setTailMaximized((value) => !value)}
+                >
+                  <span aria-hidden="true" />
                 </button>
                 <button type="button" onClick={closeTail}>
                   Close
