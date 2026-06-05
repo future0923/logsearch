@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent, ReactNode } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import './App.css'
+import { shouldOpenResultFromClick } from './resultInteraction'
 
 type ContextLine = {
   lineNo: number
@@ -254,6 +255,7 @@ function App() {
   const tailOffsetRef = useRef<number | null>(null)
   const tailNextLineNoRef = useRef<number | null>(null)
   const activeTailInitialLinesRef = useRef(10)
+  const resultPointerDownRef = useRef<{ x: number, y: number } | null>(null)
   // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual manages its own scroll measurement state.
   const tailVirtualizer = useVirtualizer({
     count: tailLines.length,
@@ -603,6 +605,10 @@ function selectFileScope(fileId: string) {
     if (event.key !== 'Enter' && event.key !== ' ') return
     event.preventDefault()
     selectHit(index)
+  }
+
+  function hasSelectedText() {
+    return Boolean(window.getSelection()?.toString())
   }
 
   function closePreview() {
@@ -962,7 +968,19 @@ function selectFileScope(fileId: string) {
                       key={key}
                       role="button"
                       tabIndex={0}
-                      onClick={() => selectHit(index)}
+                      onPointerDown={(event) => {
+                        resultPointerDownRef.current = { x: event.clientX, y: event.clientY }
+                      }}
+                      onClick={(event) => {
+                        if (!shouldOpenResultFromClick({
+                          hasTextSelection: hasSelectedText(),
+                          pointerDown: resultPointerDownRef.current,
+                          pointerUp: { x: event.clientX, y: event.clientY },
+                        })) {
+                          return
+                        }
+                        selectHit(index)
+                      }}
                       onKeyDown={(event) => selectHitFromKeyboard(event, index)}
                     >
                       {canCollapse ? (
