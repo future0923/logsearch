@@ -1,0 +1,3 @@
+2026-05-03T11:20:10Z ERROR trace_id=recursive-demo-003 order_id=R-0503 failed to publish event
+2026-05-03T11:20:11Z WARN trace_id=recursive-demo-003 retry=2 kafka publish timeout
+2026-05-03T11:20:12Z ERROR trace_id=shared-duplicate-name source=2026-05-03 error file should stay distinct

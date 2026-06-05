@@ -1,0 +1,3 @@
+2026-05-03T12:30:00Z INFO trace_id=recursive-demo-004 order_id=I-0503 shipment created
+2026-05-03T12:30:01Z INFO trace_id=recursive-demo-004 notification queued
+2026-05-03T12:30:02Z INFO trace_id=shared-info-name source=2026-05-03 info file should stay distinct

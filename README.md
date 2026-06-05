@@ -16,6 +16,7 @@ LogSearch是一个低内存、高性能、渐进式检索工具。
 
 ## 它适合这些场景：
 
+- 开发测试环境没有条件上 elk，又不想命令检索。
 - 在多份应用日志里快速找关键字。
 - 搜索错误、链路 ID、订单号、用户 ID、类名、接口名。
 - 用 `AND` / `OR` 组合条件缩小范围。
@@ -89,6 +90,7 @@ path = "/var/log/my-app/worker.log"
 id = "my-app"
 path = "/var/log/my-app"
 include = ["*.log", "*.gz", "*.zst", "*.bz2", "*.xz"]
+exclude = []
 recursive = false
 ```
 
@@ -98,9 +100,24 @@ recursive = false
 - `path` 是真实日志路径。
 - 可以配置多个 `[[files]]`。
 - 也可以配置 `[[directories]]`，目录下匹配 `include` 的日志会自动发现并加入搜索。
+- `path` 必须是真实目录，不支持 `./logs/**` 这类通配符；需要筛选子目录时，把通配符写到 `include`。
+- `include` 可以匹配文件名，例如 `*.log`；也可以在 `recursive = true` 时匹配相对路径，例如 `2026-05-*/*.log`。
+- `exclude` 可以排除相对路径，例如 `**/debug.log`。
 - `.gz`、`.zst`、`.bz2`、`.xz` 文件会按对应压缩格式自动解压搜索，并在页面里显示压缩类型。
 - `recursive = false` 表示只扫描目录第一层。
+- 如果日志按日期放在子目录里，可以设置 `recursive = true`，例如 `/var/log/my-app/2026-05-02/error.log` 和 `/var/log/my-app/2026-05-03/error.log` 会分别显示为不同来源。
 - 页面里的 `File` 下拉框可以选择全部文件或某一个文件。
+
+例如只搜索 2026 年 5 月的日志：
+
+```toml
+[[directories]]
+id = "my-app-2026-05"
+path = "/var/log/my-app"
+include = ["2026-05-*/*.log"]
+exclude = ["**/debug.log"]
+recursive = true
+```
 
 ## 怎么搜索
 

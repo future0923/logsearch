@@ -16,4 +16,5 @@ path = "./samples/worker.log"
 id = "samples"
 path = "./samples"
 include = ["*.log", "*.gz", "*.zst", "*.bz2", "*.xz"]
+exclude = []
 recursive = false

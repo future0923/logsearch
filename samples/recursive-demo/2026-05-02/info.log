@@ -1,0 +1,3 @@
+2026-05-02T10:15:00Z INFO trace_id=recursive-demo-002 order_id=I-0502 checkout started
+2026-05-02T10:15:01Z INFO trace_id=recursive-demo-002 payment authorized
+2026-05-02T10:15:02Z INFO trace_id=shared-info-name source=2026-05-02 info file should stay distinct

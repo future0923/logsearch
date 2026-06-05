@@ -1,0 +1,15 @@
+[server]
+addr = "127.0.0.1:12457"
+
+[index]
+dir = "./data/recursive-demo-index"
+
+[[directories]]
+id = "recursive-demo"
+path = "./samples/recursive-demo"
+include = ["*.log"]
+exclude = []
+recursive = true
+
+# To search only May-style folders, replace the include above with:
+# include = ["2026-05-*/*.log"]

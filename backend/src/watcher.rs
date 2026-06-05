@@ -421,10 +421,7 @@ pub fn jobs_for_path(config: &AppConfig, path: &Path) -> Vec<IndexJob> {
         if !directory_file_matches(directory, path) {
             continue;
         }
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        let id = format!("{}:{file_name}", directory.id);
+        let id = directory_source_id(directory, path);
         let job = match discovered_kind(path) {
             DiscoveredFileKind::Hot => IndexJob::Hot {
                 source_id: id,
@@ -531,10 +528,7 @@ pub fn discover_files_limited(config: &AppConfig, limit: usize) -> Vec<Discovere
             if !directory_file_matches(directory, path) {
                 continue;
             }
-            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            let id = format!("{}:{file_name}", directory.id);
+            let id = directory_source_id(directory, path);
             files.insert(
                 id.clone(),
                 DiscoveredFile {
@@ -551,6 +545,16 @@ pub fn discover_files_limited(config: &AppConfig, limit: usize) -> Vec<Discovere
     }
 
     files.into_values().collect()
+}
+
+fn directory_source_id(directory: &LogDirectoryConfig, path: &Path) -> String {
+    let relative_path = path.strip_prefix(&directory.path).unwrap_or(path);
+    let relative = relative_path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    format!("{}:{relative}", directory.id)
 }
 
 fn job_for_discovered_file(file: DiscoveredFile) -> IndexJob {
@@ -575,14 +579,18 @@ fn discovered_kind(path: &Path) -> DiscoveredFileKind {
 }
 
 fn directory_file_matches(directory: &LogDirectoryConfig, path: &Path) -> bool {
-    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
-
-    directory
+    let relative = relative_path_for_match(directory, path);
+    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+    let included = directory
         .include
         .iter()
-        .any(|pattern| file_name_matches(file_name, pattern))
+        .any(|pattern| directory_pattern_matches(pattern, file_name, &relative));
+    let excluded = directory
+        .exclude
+        .iter()
+        .any(|pattern| directory_pattern_matches(pattern, file_name, &relative));
+
+    included && !excluded
 }
 
 fn is_rotation_candidate_for(path: &Path, hot_path: &Path) -> bool {
@@ -607,16 +615,83 @@ fn compressed_kind(path: &Path) -> Option<DiscoveredFileKind> {
 }
 
 fn file_name_matches(file_name: &str, pattern: &str) -> bool {
-    if pattern == "*" {
-        return true;
+    glob_matches(pattern, file_name)
+}
+
+fn relative_path_for_match(directory: &LogDirectoryConfig, path: &Path) -> String {
+    path.strip_prefix(&directory.path)
+        .unwrap_or(path)
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn directory_pattern_matches(pattern: &str, file_name: &str, relative_path: &str) -> bool {
+    if pattern.contains('/') || pattern.contains('\\') {
+        glob_matches(&normalize_pattern(pattern), relative_path)
+    } else {
+        file_name_matches(file_name, pattern)
     }
-    if let Some(suffix) = pattern.strip_prefix("*.") {
-        return file_name.ends_with(&format!(".{suffix}"));
+}
+
+fn normalize_pattern(pattern: &str) -> String {
+    pattern.replace('\\', "/")
+}
+
+fn glob_matches(pattern: &str, value: &str) -> bool {
+    let pattern = pattern.chars().collect::<Vec<_>>();
+    let value = value.chars().collect::<Vec<_>>();
+    let mut memo = vec![vec![None; value.len() + 1]; pattern.len() + 1];
+    glob_match_tokens(&pattern, &value, 0, 0, &mut memo)
+}
+
+fn glob_match_tokens(
+    pattern: &[char],
+    value: &[char],
+    pattern_idx: usize,
+    value_idx: usize,
+    memo: &mut [Vec<Option<bool>>],
+) -> bool {
+    if let Some(cached) = memo[pattern_idx][value_idx] {
+        return cached;
     }
-    if let Some(suffix) = pattern.strip_prefix('*') {
-        return file_name.ends_with(suffix);
-    }
-    file_name == pattern
+
+    let matched = if pattern_idx == pattern.len() {
+        value_idx == value.len()
+    } else if pattern[pattern_idx] == '*'
+        && pattern.get(pattern_idx + 1) == Some(&'*')
+        && pattern.get(pattern_idx + 2) == Some(&'/')
+    {
+        glob_match_tokens(pattern, value, pattern_idx + 3, value_idx, memo)
+            || (value_idx < value.len()
+                && glob_match_tokens(pattern, value, pattern_idx, value_idx + 1, memo))
+    } else if pattern[pattern_idx] == '*' && pattern.get(pattern_idx + 1) == Some(&'*') {
+        glob_match_tokens(pattern, value, pattern_idx + 2, value_idx, memo)
+            || (value_idx < value.len()
+                && glob_match_tokens(pattern, value, pattern_idx, value_idx + 1, memo))
+    } else {
+        match pattern[pattern_idx] {
+            '*' => {
+                glob_match_tokens(pattern, value, pattern_idx + 1, value_idx, memo)
+                    || (value_idx < value.len()
+                        && value[value_idx] != '/'
+                        && glob_match_tokens(pattern, value, pattern_idx, value_idx + 1, memo))
+            }
+            '?' => {
+                value_idx < value.len()
+                    && value[value_idx] != '/'
+                    && glob_match_tokens(pattern, value, pattern_idx + 1, value_idx + 1, memo)
+            }
+            literal => {
+                value_idx < value.len()
+                    && value[value_idx] == literal
+                    && glob_match_tokens(pattern, value, pattern_idx + 1, value_idx + 1, memo)
+            }
+        }
+    };
+    memo[pattern_idx][value_idx] = Some(matched);
+    matched
 }
 
 #[cfg(test)]
@@ -653,9 +728,14 @@ mod tests {
                 id: "release".to_string(),
                 path,
                 include: vec!["*.log".to_string(), "*.gz".to_string()],
+                exclude: Vec::new(),
                 recursive: false,
             }],
         }
+    }
+
+    fn mkdir(path: &Path) {
+        std::fs::create_dir(path).unwrap();
     }
 
     #[test]
@@ -818,6 +898,175 @@ mod tests {
                 },
             ])
         );
+    }
+
+    #[test]
+    fn recursive_directory_config_keeps_duplicate_file_names_distinct() {
+        let dir = tempfile::tempdir().unwrap();
+        let first_day = dir.path().join("2026-05-02");
+        let second_day = dir.path().join("2026-05-03");
+        mkdir(&first_day);
+        mkdir(&second_day);
+        let first_error = first_day.join("error.log");
+        let first_info = first_day.join("info.log");
+        let second_error = second_day.join("error.log");
+        let second_info = second_day.join("info.log");
+        std::fs::write(&first_error, "first error\n").unwrap();
+        std::fs::write(&first_info, "first info\n").unwrap();
+        std::fs::write(&second_error, "second error\n").unwrap();
+        std::fs::write(&second_info, "second info\n").unwrap();
+        let mut cfg = directory_config(dir.path().to_path_buf());
+        cfg.directories[0].recursive = true;
+        cfg.directories[0].include = vec!["*.log".to_string()];
+
+        let discovered = discover_files(&cfg);
+
+        assert_eq!(
+            discovered,
+            vec![
+                DiscoveredFile {
+                    id: "release:2026-05-02/error.log".to_string(),
+                    path: first_error.clone(),
+                    kind: DiscoveredFileKind::Hot,
+                    source: DiscoveredFileSource::Directory {
+                        directory_id: "release".to_string()
+                    },
+                    exists: true,
+                },
+                DiscoveredFile {
+                    id: "release:2026-05-02/info.log".to_string(),
+                    path: first_info,
+                    kind: DiscoveredFileKind::Hot,
+                    source: DiscoveredFileSource::Directory {
+                        directory_id: "release".to_string()
+                    },
+                    exists: true,
+                },
+                DiscoveredFile {
+                    id: "release:2026-05-03/error.log".to_string(),
+                    path: second_error.clone(),
+                    kind: DiscoveredFileKind::Hot,
+                    source: DiscoveredFileSource::Directory {
+                        directory_id: "release".to_string()
+                    },
+                    exists: true,
+                },
+                DiscoveredFile {
+                    id: "release:2026-05-03/info.log".to_string(),
+                    path: second_info,
+                    kind: DiscoveredFileKind::Hot,
+                    source: DiscoveredFileSource::Directory {
+                        directory_id: "release".to_string()
+                    },
+                    exists: true,
+                },
+            ]
+        );
+        assert_eq!(
+            jobs_for_path(&cfg, &first_error),
+            vec![IndexJob::Hot {
+                source_id: "release:2026-05-02/error.log".to_string(),
+                path: first_error,
+            }]
+        );
+        assert_eq!(
+            jobs_for_path(&cfg, &second_error),
+            vec![IndexJob::Hot {
+                source_id: "release:2026-05-03/error.log".to_string(),
+                path: second_error,
+            }]
+        );
+    }
+
+    #[test]
+    fn recursive_directory_include_can_filter_by_relative_path_glob() {
+        let dir = tempfile::tempdir().unwrap();
+        let may_day = dir.path().join("2026-05-02");
+        let june_day = dir.path().join("2026-06-03");
+        mkdir(&may_day);
+        mkdir(&june_day);
+        let may_error = may_day.join("error.log");
+        let may_info = may_day.join("info.log");
+        let june_error = june_day.join("error.log");
+        std::fs::write(&may_error, "may error\n").unwrap();
+        std::fs::write(&may_info, "may info\n").unwrap();
+        std::fs::write(&june_error, "june error\n").unwrap();
+        let mut cfg = directory_config(dir.path().to_path_buf());
+        cfg.directories[0].recursive = true;
+        cfg.directories[0].include = vec!["2026-05-*/*.log".to_string()];
+
+        let discovered = discover_files(&cfg);
+
+        assert_eq!(
+            discovered
+                .iter()
+                .map(|file| file.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "release:2026-05-02/error.log",
+                "release:2026-05-02/info.log",
+            ]
+        );
+        assert_eq!(
+            jobs_for_path(&cfg, &may_error),
+            vec![IndexJob::Hot {
+                source_id: "release:2026-05-02/error.log".to_string(),
+                path: may_error,
+            }]
+        );
+        assert!(jobs_for_path(&cfg, &june_error).is_empty());
+    }
+
+    #[test]
+    fn directory_exclude_filters_matching_relative_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let day = dir.path().join("2026-05-02");
+        mkdir(&day);
+        let app_log = day.join("app.log");
+        let debug_log = day.join("debug.log");
+        std::fs::write(&app_log, "app\n").unwrap();
+        std::fs::write(&debug_log, "debug\n").unwrap();
+        let mut cfg = directory_config(dir.path().to_path_buf());
+        cfg.directories[0].recursive = true;
+        cfg.directories[0].include = vec!["2026-05-*/*.log".to_string()];
+        cfg.directories[0].exclude = vec!["**/debug.log".to_string()];
+
+        let discovered = discover_files(&cfg);
+
+        assert_eq!(
+            discovered
+                .iter()
+                .map(|file| file.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["release:2026-05-02/app.log"]
+        );
+        assert!(jobs_for_path(&cfg, &debug_log).is_empty());
+    }
+
+    #[test]
+    fn double_star_directory_pattern_matches_nested_relative_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("2026-05").join("02").join("service-a");
+        std::fs::create_dir_all(&nested).unwrap();
+        let app_log = nested.join("app.log");
+        let debug_log = nested.join("debug.log");
+        std::fs::write(&app_log, "app\n").unwrap();
+        std::fs::write(&debug_log, "debug\n").unwrap();
+        let mut cfg = directory_config(dir.path().to_path_buf());
+        cfg.directories[0].recursive = true;
+        cfg.directories[0].include = vec!["2026-05/**/*.log".to_string()];
+        cfg.directories[0].exclude = vec!["**/debug.log".to_string()];
+
+        let discovered = discover_files(&cfg);
+
+        assert_eq!(
+            discovered
+                .iter()
+                .map(|file| file.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["release:2026-05/02/service-a/app.log"]
+        );
+        assert!(jobs_for_path(&cfg, &debug_log).is_empty());
     }
 
     #[test]

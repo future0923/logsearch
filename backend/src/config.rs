@@ -41,6 +41,8 @@ pub struct LogDirectoryConfig {
     #[serde(default = "default_directory_include")]
     pub include: Vec<String>,
     #[serde(default)]
+    pub exclude: Vec<String>,
+    #[serde(default)]
     pub recursive: bool,
 }
 
@@ -81,6 +83,7 @@ impl AppConfig {
         }
 
         for directory in &mut cfg.directories {
+            validate_directory_path(&directory.path)?;
             if directory.path.is_relative() {
                 directory.path = base.join(&directory.path);
             }
@@ -89,6 +92,17 @@ impl AppConfig {
 
         Ok(cfg)
     }
+}
+
+fn validate_directory_path(path: &Path) -> anyhow::Result<()> {
+    let source = path.to_string_lossy();
+    if source.contains('*') || source.contains('?') || source.contains('[') {
+        anyhow::bail!(
+            "directories.path must be a real directory, put patterns in include instead: path = {:?}",
+            path
+        );
+    }
+    Ok(())
 }
 
 fn absolutize(path: &Path) -> anyhow::Result<PathBuf> {
@@ -153,6 +167,28 @@ path = "./logs"
             config.directories[0].include,
             vec!["*.log", "*.gz", "*.zst", "*.bz2", "*.xz"]
         );
+        assert!(config.directories[0].exclude.is_empty());
         assert!(!config.directories[0].recursive);
+    }
+
+    #[test]
+    fn rejects_glob_patterns_in_directory_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[[directories]]
+id = "release"
+path = "./logs/**"
+include = ["*.log"]
+"#,
+        )
+        .unwrap();
+
+        let err = AppConfig::load(&config_path).unwrap_err();
+
+        assert!(err.to_string().contains("directories.path must be a real directory"));
+        assert!(err.to_string().contains("put patterns in include instead"));
     }
 }

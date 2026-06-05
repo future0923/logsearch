@@ -1,0 +1,3 @@
+2026-05-02T09:00:01Z ERROR trace_id=recursive-demo-001 order_id=R-0502 failed to reserve inventory
+2026-05-02T09:00:02Z WARN trace_id=recursive-demo-001 retry=1 inventory service timeout
+2026-05-02T09:00:03Z ERROR trace_id=shared-duplicate-name source=2026-05-02 error file should stay distinct
