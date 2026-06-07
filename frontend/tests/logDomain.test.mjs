@@ -7,6 +7,7 @@ import {
   filePickerSelectionTitle,
   filterFileSources,
   isCompressedKind,
+  selectAllVisibleFileSources,
   shortPath,
   toggleAllFileSelection,
   toggleFileSelection,
@@ -86,6 +87,21 @@ test('toggles all file selections by explicit selected ids', () => {
   assert.deepEqual(toggleAllFileSelection(files, []), ['app-hot', 'archive-gz'])
   assert.deepEqual(toggleAllFileSelection(files, ['app-hot']), ['app-hot', 'archive-gz'])
   assert.deepEqual(toggleAllFileSelection(files, ['archive-gz', 'app-hot']), [])
+})
+
+test('toggles all file selections within filtered sources', () => {
+  const allFiles = [
+    ...files,
+    {
+      id: 'worker-hot',
+      path: '/var/log/worker.log',
+      kind: 'hot',
+      source: 'file',
+      exists: true,
+    },
+  ]
+
+  assert.deepEqual(selectAllVisibleFileSources(allFiles, [], 'archive'), ['archive-gz'])
 })
 
 test('builds case-sensitive highlight regex when ignore case is disabled', () => {

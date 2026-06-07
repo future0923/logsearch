@@ -113,6 +113,10 @@ export function toggleAllFileSelection(files: FileSource[], selectedIds: string[
   return allSelected ? [] : fileIds
 }
 
+export function selectAllVisibleFileSources(files: FileSource[], selectedIds: string[], search: string) {
+  return toggleAllFileSelection(filterFileSources(files, search), selectedIds)
+}
+
 export function isCompressedKind(kind: string) {
   return kind === 'gzip' || kind === 'zstd' || kind === 'bzip2' || kind === 'xz'
 }

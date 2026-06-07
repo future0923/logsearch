@@ -13,8 +13,8 @@ import {
   filterFileSources,
   isCompressedKind,
   resultKey,
+  selectAllVisibleFileSources,
   shortPath,
-  toggleAllFileSelection,
   toggleFileSelection,
   type AroundResponse,
   type ContextLine,
@@ -115,8 +115,9 @@ const selectedFileScopeLabel = computed(() => filePickerSelectionLabel(fileSourc
 const selectedFileScopeTitle = computed(() => filePickerSelectionTitle(fileSources.value, selectedFileIds.value))
 const filteredFileSources = computed(() => filterFileSources(fileSources.value, filePickerSearch.value))
 const allFilesExplicitlySelected = computed(() => (
-  fileSources.value.length > 0 && fileSources.value.every((file) => selectedFileIdSet.value.has(file.id))
+  filteredFileSources.value.length > 0 && filteredFileSources.value.every((file) => selectedFileIdSet.value.has(file.id))
 ))
+const visibleFileSourceCount = computed(() => filteredFileSources.value.length)
 const hotFileCount = computed(() => fileSources.value.filter((file) => file.kind === 'hot').length)
 const compressedFileCount = computed(() => fileSources.value.filter((file) => isCompressedKind(file.kind)).length)
 const activeDirectoryCount = computed(() => configuredDirectories.value.filter((directory) => directory.exists).length)
@@ -231,7 +232,7 @@ function closeFilePickerOnOutsideClick(event: MouseEvent) {
 
 function selectFileScope(fileId: string) {
   if (fileId === 'all') {
-    selectedFileIds.value = toggleAllFileSelection(fileSources.value, selectedFileIds.value)
+    selectedFileIds.value = selectAllVisibleFileSources(fileSources.value, selectedFileIds.value, filePickerSearch.value)
     return
   }
   selectedFileIds.value = toggleFileSelection(selectedFileIds.value, fileId)
@@ -622,7 +623,7 @@ function switchTheme() {
                     <span class="filePickerCheck" :class="{ checked: allFilesExplicitlySelected }" aria-hidden="true"></span>
                     <span>全部文件</span>
                   </span>
-                  <span class="filePickerOptionMeta">{{ fileSources.length }} 个来源</span>
+                  <span class="filePickerOptionMeta">{{ visibleFileSourceCount }} 个来源</span>
                 </button>
                 <button
                   v-for="file in filteredFileSources"
