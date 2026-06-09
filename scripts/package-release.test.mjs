@@ -21,6 +21,20 @@ test('release package includes executable upgrade script', async () => {
   assert.match(script, /chmod\(join\(releaseDir, 'upgrade\.sh'\), 0o755\)/)
 })
 
+test('windows release package includes PowerShell upgrade script', async () => {
+  const script = await readFile(join(rootDir, 'scripts', 'package-release.mjs'), 'utf8')
+  assert.match(script, /packaging', 'upgrade\.ps1'/)
+  assert.match(script, /releaseDir, 'upgrade\.ps1'/)
+})
+
+test('windows upgrade script preserves user data and downloads windows zip assets', async () => {
+  const script = await readFile(join(rootDir, 'packaging', 'upgrade.ps1'), 'utf8')
+  assert.match(script, /log-search_\$\{versionWithoutV\}_windows_\$\{arch\}\.zip/)
+  assert.match(script, /"config\.toml", "data", "logs", "run", "backups"/)
+  assert.match(script, /Stop-Process -Id \$_.ProcessId -Force/)
+  assert.match(script, /Copy-Item -LiteralPath \$currentUpgrade -Destination \$appUpgrade -Force/)
+})
+
 test('cargoBuildArgs adds the configured Rust target', () => {
   assert.deepEqual(cargoBuildArgs('x86_64-unknown-linux-musl'), [
     'build',

@@ -38,8 +38,10 @@ assert_content() {
 make_release() {
   local version="$1"
   local include_upgrade="${2:-1}"
+  local system="${3:-linux}"
+  local arch="${4:-amd64}"
   local root="$TMP_DIR/releases/$version"
-  local release_dir="$root/log-search_${version}_linux_amd64"
+  local release_dir="$root/log-search_${version}_${system}_${arch}"
   mkdir -p "$release_dir/frontend" "$root"
   printf 'binary-%s' "$version" > "$release_dir/log-search"
   printf 'frontend-%s' "$version" > "$release_dir/frontend/index.html"
@@ -66,7 +68,7 @@ EOF
   if [ -f "$release_dir/upgrade.sh" ]; then
     chmod +x "$release_dir/upgrade.sh"
   fi
-  tar -C "$root" -czf "$root/log-search_${version}_linux_amd64.tar.gz" "log-search_${version}_linux_amd64"
+  tar -C "$root" -czf "$root/log-search_${version}_${system}_${arch}.tar.gz" "log-search_${version}_${system}_${arch}"
 }
 
 make_app() {
@@ -95,6 +97,7 @@ EOF
 make_release "0.2.0"
 make_release "0.3.0"
 make_release "0.4.0" 0
+make_release "0.5.0" 1 darwin arm64
 
 LATEST_FILE="$TMP_DIR/latest.json"
 printf '{"tag_name":"v0.3.0"}' > "$LATEST_FILE"
@@ -148,6 +151,20 @@ chmod +x "$APP_LEGACY_RELEASE/upgrade.sh"
 )
 
 assert_file "$APP_LEGACY_RELEASE/upgrade.sh"
+
+APP_DARWIN="$TMP_DIR/app-darwin"
+make_app "$APP_DARWIN"
+(
+  cd "$APP_DARWIN"
+  LOG_SEARCH_UPGRADE_BASE_URL="file://$TMP_DIR/releases" \
+  LOG_SEARCH_SYSTEM=darwin \
+  LOG_SEARCH_ARCH=arm64 \
+  "$SCRIPT" v0.5.0
+)
+
+assert_content "$APP_DARWIN/log-search" "binary-0.5.0"
+assert_content "$APP_DARWIN/config.toml" "user-config"
+assert_file "$APP_DARWIN/upgrade.sh"
 
 APP_FALLBACK="$TMP_DIR/app-fallback"
 make_app "$APP_FALLBACK"

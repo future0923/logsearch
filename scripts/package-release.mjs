@@ -71,6 +71,7 @@ async function build() {
   await cp(join(rootDir, 'packaging', 'README.txt'), join(releaseDir, 'README.txt'))
 
   if (platform === 'windows') {
+    await cp(join(rootDir, 'packaging', 'upgrade.ps1'), join(releaseDir, 'upgrade.ps1'))
     await writeWindowsReadme()
   } else {
     await cp(join(rootDir, 'packaging', 'start.sh'), join(releaseDir, 'start.sh'))
@@ -106,7 +107,15 @@ async function writeWindowsReadme() {
 
    .\\log-search.exe --config config.toml --static-dir frontend
 
-3. Open:
+3. Upgrade from PowerShell:
+
+   .\\upgrade.ps1
+
+   Or upgrade to a specific version:
+
+   .\\upgrade.ps1 v0.1.2
+
+4. Open:
 
    http://127.0.0.1:12457
 

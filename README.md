@@ -104,6 +104,18 @@ LOG_SEARCH_MIRROR=gitee ./upgrade.sh
 LOG_SEARCH_MIRROR=github ./upgrade.sh
 ```
 
+Windows 版本请在 PowerShell 里执行：
+
+```powershell
+.\upgrade.ps1
+```
+
+指定版本：
+
+```powershell
+.\upgrade.ps1 v0.1.2
+```
+
 ## 配置日志文件
 
 在 `config.toml` 里配置要搜索的日志：
