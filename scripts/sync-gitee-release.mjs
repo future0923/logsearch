@@ -85,8 +85,35 @@ export function buildGiteeApiUrl(path, params = {}) {
   return `${giteeBaseUrl}${resolvedPath}`
 }
 
-export function releaseBody() {
+export function releaseBody({ tag, notes = '' }) {
+  const sections = [`# Log Search ${tag}`]
+  const trimmedNotes = notes.trim()
+  if (trimmedNotes) {
+    sections.push(trimmedNotes)
+  } else {
+    sections.push([
+      '- 在多份应用日志里快速找关键字。',
+      '- 搜索错误、链路 ID、订单号、用户 ID、类名、接口名。',
+      '- 用 `AND` / `OR` 组合条件缩小范围。',
+      '- 点开命中行，直接查看前后上下文。',
+      '- 日志持续写入时，索引自动更新。',
+      '- 支持多种压缩格式（gz、zst、bz2、xz 等）搜索。',
+      '- 支持 tail -f 实时查看日志。',
+    ].join('\n'))
+  }
+
+  sections.push([
+    '## 下载文件',
+    ...assetNamesForVersion(tag).map((assetName) => `- ${assetName}`),
+  ].join('\n'))
+
+  return sections.join('\n\n')
+}
+
+function defaultGithubReleaseNotes(tag) {
   return [
+    `发布版本 ${tag}。`,
+    '',
     '- 在多份应用日志里快速找关键字。',
     '- 搜索错误、链路 ID、订单号、用户 ID、类名、接口名。',
     '- 用 `AND` / `OR` 组合条件缩小范围。',
@@ -236,10 +263,10 @@ async function downloadFile(url, targetPath, timeoutMs) {
 
 async function ensureGiteeRelease(options, token) {
   const existing = await findGiteeRelease(options, token)
+  const githubNotes = await fetchGithubReleaseNotes(options)
   const body = releaseBody({
-    githubOwner: options.githubOwner,
-    githubRepo: options.githubRepo,
     tag: options.tag,
+    notes: githubNotes,
   })
   const releasePayload = buildGiteeReleasePayload({
     tag: options.tag,
@@ -260,6 +287,20 @@ async function ensureGiteeRelease(options, token) {
     method: 'PATCH',
     body: releasePayload,
   })
+}
+
+async function fetchGithubReleaseNotes(options) {
+  const url = `https://api.github.com/repos/${encodeURIComponent(options.githubOwner)}/${encodeURIComponent(options.githubRepo)}/releases/tags/${encodeURIComponent(options.tag)}`
+  try {
+    const response = await fetch(url, { headers: { Accept: 'application/vnd.github+json' } })
+    if (!response.ok) {
+      return defaultGithubReleaseNotes(options.tag)
+    }
+    const release = await response.json()
+    return release.body || defaultGithubReleaseNotes(options.tag)
+  } catch {
+    return defaultGithubReleaseNotes(options.tag)
+  }
 }
 
 async function findGiteeRelease(options, token) {

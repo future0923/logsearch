@@ -64,14 +64,26 @@ test('buildGiteeApiUrl encodes repository paths', () => {
   )
 })
 
-test('releaseBody describes the release without public sync metadata', () => {
+test('releaseBody uses version-specific notes when provided', () => {
   const body = releaseBody({
-    githubOwner: 'future0923',
-    githubRepo: 'logsearch',
-    tag: 'v0.1.0',
+    tag: 'v0.1.2',
+    notes: '新增在线升级脚本\n修复启动提示',
   })
+  assert.match(body, /Log Search v0\.1\.2/)
+  assert.match(body, /新增在线升级脚本/)
+  assert.match(body, /修复启动提示/)
+  assert.match(body, /log-search_0\.1\.2_linux_amd64\.tar\.gz/)
+  assert.doesNotMatch(body, /GitHub/i)
+  assert.doesNotMatch(body, /同步/)
+})
+
+test('releaseBody falls back to product summary without public sync metadata', () => {
+  const body = releaseBody({
+    tag: 'v0.1.0',
+    notes: '',
+  })
+  assert.match(body, /Log Search v0\.1\.0/)
   assert.match(body, /在多份应用日志里快速找关键字/)
-  assert.match(body, /支持 tail -f 实时查看日志/)
   assert.doesNotMatch(body, /GitHub/i)
   assert.doesNotMatch(body, /同步/)
   assert.doesNotMatch(body, /musl/i)
