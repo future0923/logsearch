@@ -33,9 +33,10 @@ cp "$ROOT_DIR/config.example.toml" "$RELEASE_DIR/config.toml"
 cp "$ROOT_DIR/packaging/start.sh" "$RELEASE_DIR/start.sh"
 cp "$ROOT_DIR/packaging/stop.sh" "$RELEASE_DIR/stop.sh"
 cp "$ROOT_DIR/packaging/status.sh" "$RELEASE_DIR/status.sh"
+cp "$ROOT_DIR/packaging/upgrade.sh" "$RELEASE_DIR/upgrade.sh"
 cp "$ROOT_DIR/packaging/README.txt" "$RELEASE_DIR/README.txt"
 cp "$ROOT_DIR/packaging/log-search.service" "$RELEASE_DIR/log-search.service"
-chmod +x "$RELEASE_DIR/$APP_NAME" "$RELEASE_DIR/start.sh" "$RELEASE_DIR/stop.sh" "$RELEASE_DIR/status.sh"
+chmod +x "$RELEASE_DIR/$APP_NAME" "$RELEASE_DIR/start.sh" "$RELEASE_DIR/stop.sh" "$RELEASE_DIR/status.sh" "$RELEASE_DIR/upgrade.sh"
 
 tar -C "$DIST_DIR" -czf "$RELEASE_DIR.tar.gz" "$(basename "$RELEASE_DIR")"
 

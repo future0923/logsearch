@@ -14,6 +14,13 @@ test('release workflow avoids Cargo internal target environment variable', async
   assert.doesNotMatch(workflow, /CARGO_BUILD_TARGET:/)
 })
 
+test('release package includes executable upgrade script', async () => {
+  const script = await readFile(join(rootDir, 'scripts', 'package-release.mjs'), 'utf8')
+  assert.match(script, /packaging', 'upgrade\.sh'/)
+  assert.match(script, /releaseDir, 'upgrade\.sh'/)
+  assert.match(script, /chmod\(join\(releaseDir, 'upgrade\.sh'\), 0o755\)/)
+})
+
 test('cargoBuildArgs adds the configured Rust target', () => {
   assert.deepEqual(cargoBuildArgs('x86_64-unknown-linux-musl'), [
     'build',

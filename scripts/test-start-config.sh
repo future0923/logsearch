@@ -17,10 +17,13 @@ chmod +x "$TMP_DIR/log-search"
 
 assert_args() {
   local expected_config="$1"
+  local expected_output="$2"
+  shift
   shift
 
   rm -f "$TMP_DIR/args.txt" "$TMP_DIR/run/log-search.pid"
-  "$@"
+  local output
+  output="$("$@")"
 
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     [ -f "$TMP_DIR/args.txt" ] && break
@@ -43,15 +46,31 @@ assert_args() {
     cat "$TMP_DIR/args.txt" >&2
     exit 1
   fi
+
+  if ! printf '%s\n' "$output" | grep -F "$expected_output" >/dev/null; then
+    echo "expected start output to contain: $expected_output" >&2
+    echo "actual output:" >&2
+    printf '%s\n' "$output" >&2
+    exit 1
+  fi
 }
 
-touch "$TMP_DIR/config.toml"
-assert_args "config.toml" "$TMP_DIR/start.sh"
+cat > "$TMP_DIR/config.toml" <<'EOF'
+[server]
+addr = "127.0.0.1:12457"
+EOF
+assert_args "config.toml" "Open: http://127.0.0.1:12457" "$TMP_DIR/start.sh"
 
-touch "$TMP_DIR/env-config.toml"
-assert_args "env-config.toml" env CONFIG_FILE=env-config.toml "$TMP_DIR/start.sh"
+cat > "$TMP_DIR/env-config.toml" <<'EOF'
+[server]
+addr = "0.0.0.0:12457"
+EOF
+assert_args "env-config.toml" "Listening: 0.0.0.0:12457" env CONFIG_FILE=env-config.toml "$TMP_DIR/start.sh"
 
-touch "$TMP_DIR/arg-config.toml"
-assert_args "arg-config.toml" env CONFIG_FILE=env-config.toml "$TMP_DIR/start.sh" arg-config.toml
+cat > "$TMP_DIR/arg-config.toml" <<'EOF'
+[server]
+addr = "192.168.0.10:12457"
+EOF
+assert_args "arg-config.toml" "Open: http://192.168.0.10:12457" env CONFIG_FILE=env-config.toml "$TMP_DIR/start.sh" arg-config.toml
 
 echo "start.sh config override tests passed."

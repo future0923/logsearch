@@ -81,6 +81,29 @@ realm = "Log Search"
 
 开启后，访问页面和 API 都需要输入用户名密码。Basic Auth 只做 base64 编码，不负责加密；公网或不可信网络里请配合 HTTPS、VPN 或反向代理使用。
 
+## 升级
+
+在安装目录执行下面的命令，会自动升级到最新版本：
+
+```bash
+./upgrade.sh
+```
+
+也可以升级到指定版本：
+
+```bash
+./upgrade.sh v0.2.0
+```
+
+升级脚本会自动识别系统和 CPU 架构，下载对应 release 包，停止当前服务后用新版本覆盖程序文件。升级时会保留 `config.toml`、`data/`、`logs/`、`run/` 和 `backups/`，新版本自带的示例配置会保存为 `config.toml.new`。
+
+国内网络默认会优先尝试 Gitee，失败后再尝试 GitHub。也可以手动指定下载源：
+
+```bash
+LOG_SEARCH_MIRROR=gitee ./upgrade.sh
+LOG_SEARCH_MIRROR=github ./upgrade.sh
+```
+
 ## 配置日志文件
 
 在 `config.toml` 里配置要搜索的日志：

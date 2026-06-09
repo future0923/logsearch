@@ -76,10 +76,12 @@ async function build() {
     await cp(join(rootDir, 'packaging', 'start.sh'), join(releaseDir, 'start.sh'))
     await cp(join(rootDir, 'packaging', 'stop.sh'), join(releaseDir, 'stop.sh'))
     await cp(join(rootDir, 'packaging', 'status.sh'), join(releaseDir, 'status.sh'))
+    await cp(join(rootDir, 'packaging', 'upgrade.sh'), join(releaseDir, 'upgrade.sh'))
     await chmod(join(releaseDir, binaryName), 0o755)
     await chmod(join(releaseDir, 'start.sh'), 0o755)
     await chmod(join(releaseDir, 'stop.sh'), 0o755)
     await chmod(join(releaseDir, 'status.sh'), 0o755)
+    await chmod(join(releaseDir, 'upgrade.sh'), 0o755)
     if (platform === 'linux') {
       await copyIfExists(join(rootDir, 'packaging', 'log-search.service'), join(releaseDir, 'log-search.service'))
     }

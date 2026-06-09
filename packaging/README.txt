@@ -31,6 +31,11 @@ Log Search
       如果 run/log-search.pid 丢失，脚本会尝试停止当前目录下 log-search 二进制启动的进程。
       Linux 上会优先通过进程工作目录匹配，因此也支持 ./log-search 形式启动的进程。
 
+  ./upgrade.sh
+      在线升级到最新版本。
+      可传入版本号升级到指定版本，例如 ./upgrade.sh v0.2.0。
+      升级时会保留 config.toml、data/、logs/、run/、backups/。
+
   tail -f logs/log-search.log
       查看运行日志。
 

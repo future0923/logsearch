@@ -6,6 +6,41 @@ CONFIG_FILE="${1:-${CONFIG_FILE:-config.toml}}"
 PID_FILE="$APP_DIR/run/log-search.pid"
 LOG_FILE="$APP_DIR/logs/log-search.log"
 
+server_addr() {
+  awk '
+    /^\[server\][[:space:]]*$/ { in_server = 1; next }
+    /^\[/ { in_server = 0 }
+    in_server && /^[[:space:]]*addr[[:space:]]*=/ {
+      value = $0
+      sub(/^[^=]*=[[:space:]]*/, "", value)
+      gsub(/"/, "", value)
+      gsub(/[[:space:]]/, "", value)
+      print value
+      exit
+    }
+  ' "$CONFIG_FILE"
+}
+
+print_open_hint() {
+  local addr="$1"
+  local host port
+
+  if [ -z "$addr" ]; then
+    addr="0.0.0.0:12457"
+  fi
+
+  host="${addr%:*}"
+  port="${addr##*:}"
+
+  echo "Listening: $addr"
+  if [ "$host" = "0.0.0.0" ]; then
+    echo "Open locally: http://127.0.0.1:$port"
+    echo "Open from LAN: http://<server-ip>:$port"
+  else
+    echo "Open: http://$host:$port"
+  fi
+}
+
 mkdir -p "$APP_DIR/run" "$APP_DIR/logs"
 cd "$APP_DIR"
 
@@ -37,4 +72,4 @@ echo "$PID" > "$PID_FILE"
 echo "Log Search started."
 echo "PID: $PID"
 echo "Log: $LOG_FILE"
-echo "Open: http://127.0.0.1:12457"
+print_open_hint "$(server_addr)"
